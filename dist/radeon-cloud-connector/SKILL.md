@@ -45,7 +45,7 @@ Disk is the recurring failure mode on this box. `/workspace` reached 97% used (3
 |---|---|
 | `guide` | Print the zero-to-first-result sequence, checked live against your current state. Start here on a cold machine. |
 | `doctor` | Layered check of ssh config, key, TCP reachability, auth, workspace, venv and GPU. Detects a rotated host key and offers a backed-up repair. |
-| `status [--torch]` | Live GPU temperature, power, VRAM, plus disk, memory, load and the torch inventory of every candidate venv. |
+| `status [--torch]` | Live GPU summary (model, gfx version, temp, power, VRAM used/total), plus disk, memory, load and the torch inventory of every candidate venv. Add `--raw` to print the full `rocm-smi` dump instead of the distilled summary. |
 | `exec -- <cmd>` | Run a command remotely, defaulting to `/workspace`, sourcing `env.sh`, with `--cwd`, `--timeout`, `--venv`, `--no-auto-venv`, `--stream`, `--dry-run`. |
 | `push <local> <remote>` | Upload a directory over tar+ssh (there is no local rsync). `--exclude` is repeatable. |
 | `pull <remote> <local>` | Download a remote directory. Refuses to clobber an existing local path unless `--overwrite`. |

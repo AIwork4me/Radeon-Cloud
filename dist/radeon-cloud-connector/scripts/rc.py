@@ -933,6 +933,46 @@ def _print_report(report) -> None:
             warn(f"{len(warned)} warning(s): " + ", ".join(warned))
 
 
+def summarize_rocm(raw: str) -> str:
+    """Distill a raw `rocm-smi` dump into one compact line per GPU.
+
+    The raw output is full of `====` banners and per-attribute `GPU[n]` lines
+    that bury the few numbers a user actually wants. Keep the headline tight;
+    `rc status --raw` still prints the original for debugging.
+    """
+    gpus: dict[str, dict[str, str]] = {}
+    order: list[str] = []
+    for line in raw.splitlines():
+        m = re.match(r"\s*GPU\[(\d+)\]\s*:\s*(.+?):\s*(.+)$", line)
+        if not m:
+            continue
+        idx, key, val = m.group(1), m.group(2).strip(), m.group(3).strip()
+        if idx not in gpus:
+            gpus[idx] = {}
+            order.append(idx)
+        gpus[idx][key] = val
+    if not gpus:
+        return raw.strip()
+    rows = []
+    g = 1024**3
+    for idx in order:
+        d = gpus[idx]
+        model = d.get("Card Model", "?")
+        gfx = d.get("GFX Version", "?")
+        temp = d.get("Temperature (Sensor edge) (C)", "?")
+        power = d.get("Average Graphics Package Power (W)", "?")
+        total = d.get("VRAM Total Memory (B)")
+        used = d.get("VRAM Total Used Memory (B)")
+        vram = "?"
+        if total and used:
+            try:
+                vram = f"{int(used)/g:.2f}/{int(total)/g:.1f} GiB"
+            except ValueError:
+                vram = "?"
+        rows.append(f"  GPU[{idx}]  {model}  {gfx}   {temp}C   {power}W   VRAM {vram}")
+    return "\n".join(rows)
+
+
 def cmd_status(args, cfg) -> int:
     require_remote(cfg, "status")
 
@@ -958,7 +998,7 @@ def cmd_status(args, cfg) -> int:
         fail("rocm-smi produced no output; no GPU is exposed to this container")
         probes_ok = False
     else:
-        print(raw.strip())
+        print(raw.strip() if args.raw else summarize_rocm(raw))
 
     if disk is None or mem is None or load is None:
         warn("some system probes failed; the GPU section above may be incomplete")
@@ -993,8 +1033,9 @@ def cmd_status(args, cfg) -> int:
         for v in venvs:
             if v.get("ok"):
                 print(f"   {v['path']:<38} torch {v['torch']} / HIP {v['hip']} / {v['devices']} dev")
-            else:
-                print(f"   {v['path']:<38} {v['status']}")
+        missing = [v for v in venvs if not v.get("ok")]
+        if missing:
+            print(f"   ({len(missing)} candidate path(s) not present: " + ", ".join(v['path'] for v in missing) + ")")
         if not working:
             warn("no venv exposes torch - pass --venv to `rc exec` with a working one")
             return EXIT_FAIL
@@ -1622,6 +1663,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("status", parents=[common], help="GPU / ROCm / disk / memory snapshot")
     p.add_argument("--torch", action="store_true", help="also probe torch in every candidate venv")
+    p.add_argument("--raw", action="store_true", help="print the raw rocm-smi dump instead of the distilled summary")
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("exec", parents=[common], help="run a command remotely (sources env.sh, cwd defaults to /workspace)")
