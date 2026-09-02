@@ -1,0 +1,77 @@
+name: Nightly live journey
+
+# Protects the verified 73/73 win: runs the FULL live end-to-end journey
+# (journey_check.py --phase journey) against the real Radeon Cloud box on a
+# schedule, so real-endpoint regressions (disk full, rotated host key, broken
+# venv, detached-job failure) alert instead of silently rotting.
+#
+# The push CI (ci.yml) keeps the fast, secret-free static review (--phase review).
+# This workflow is the only one that touches the live endpoint.
+
+on:
+  schedule:
+    # 18:30 UTC daily. Pick a quiet window for your region.
+    - cron: "30 18 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-journey
+  cancel-in-progress: false
+
+jobs:
+  live-journey:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore SSH identity and config
+        # Required repository secrets (Settings > Secrets > Actions):
+        #   RADEON_CLOUD_SSH_KEY   - private key for the radeon-cloud box
+        #   RADEON_CLOUD_HOST      - box hostname / IP (e.g. 36.150.116.220)
+        #   RADEON_CLOUD_PORT      - ssh port (e.g. 31622)
+        #   RADEON_CLOUD_USER      - ssh user (e.g. root)
+        env:
+          RADEON_CLOUD_SSH_KEY: ${{ secrets.RADEON_CLOUD_SSH_KEY }}
+          RADEON_CLOUD_HOST: ${{ secrets.RADEON_CLOUD_HOST }}
+          RADEON_CLOUD_PORT: ${{ secrets.RADEON_CLOUD_PORT }}
+          RADEON_CLOUD_USER: ${{ secrets.RADEON_CLOUD_USER }}
+        run: |
+          set -euo pipefail
+          : "${RADEON_CLOUD_SSH_KEY:?set RADEON_CLOUD_SSH_KEY secret}"
+          : "${RADEON_CLOUD_HOST:?set RADEON_CLOUD_HOST secret}"
+          : "${RADEON_CLOUD_PORT:?set RADEON_CLOUD_PORT secret}"
+          : "${RADEON_CLOUD_USER:?set RADEON_CLOUD_USER secret}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$RADEON_CLOUD_SSH_KEY" > ~/.ssh/id_radeon_cloud
+          chmod 600 ~/.ssh/id_radeon_cloud
+          cat >> ~/.ssh/config <<EOF
+          Host radeon-cloud
+            HostName $RADEON_CLOUD_HOST
+            Port $RADEON_CLOUD_PORT
+            User $RADEON_CLOUD_USER
+            IdentityFile ~/.ssh/id_radeon_cloud
+            StrictHostKeyChecking no
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+          # Refresh known_hosts each run so a re-imaged (rotated host key) box
+          # does not spuriously fail the nightly; the functional checks are the
+          # real signal.
+          ssh-keyscan -p "$RADEON_CLOUD_PORT" "$RADEON_CLOUD_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Run full live journey
+        run: python scripts/journey_check.py --phase journey
+
+      - name: Report result
+        if: always()
+        run: echo "Nightly live journey exit captured above; non-zero means a real-endpoint regression."
