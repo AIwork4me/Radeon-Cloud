@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.env
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+dist/radeon-cloud-connector.zip
+.workbuddy-ai/memory/

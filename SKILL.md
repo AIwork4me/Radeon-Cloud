@@ -1,0 +1,100 @@
+---
+name: radeon-cloud-connector
+description: "Operate the remote AMD Radeon cloud GPU workstation reached through the ssh alias `radeon-cloud`. Use to connect or diagnose SSH to that box, inspect ROCm/GPU status and the torch environment, run commands there, sync code to and from /workspace, and start, monitor or stop long-running training and benchmark jobs. Triggers: radeon-cloud, Radeon cloud, Radeon 云, ROCm 远程, 远程 GPU, rocm-smi, gfx1100, 上传到 radeon, 下载结果, 跑训练, 后台任务, GPU 显存."
+agent_created: true
+---
+
+# Radeon Cloud Connector
+
+## Overview
+
+`radeon-cloud` is a rented Ubuntu 24.04 container with one AMD Navi 31 GPU (gfx1100, about 48 GB VRAM) and ROCm installed. This skill wraps it behind a single CLI, `scripts/rc.py`, which exists because five things on this box repeatedly go wrong and each one costs real time when handled by hand: the SSH host key rotates whenever the instance is re-imaged, `/workspace/env.sh` puts a venv without torch first on `PATH`, the container overlay silently discards anything written outside `/workspace`, long jobs die when the local terminal goes away, and a broken endpoint otherwise looks like a working one.
+
+Prefer the CLI over hand-rolled `ssh` one-liners. It sources the environment, applies the persistence guard, handles host-key rotation and tracks job state.
+
+## Invocation
+
+`PY` is any Python 3.10+ interpreter (PEP 604 union syntax); `RC` is this skill's `scripts/rc.py`. Use forward slashes on Windows.
+
+```bash
+PY="${HOME}/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe"   # managed interpreter
+PY="${PY:-python3}"                                                      # fallback
+RC="<skill-dir>/scripts/rc.py"
+
+"$PY" "$RC" doctor
+"$PY" "$RC" status --torch
+```
+
+Every subcommand accepts `-y/--yes` to skip confirmation prompts, which is what you want for non-interactive automation. `--host <alias>` overrides the target ssh alias if the box is ever reachable under a different name.
+
+## The remote contract you must respect
+
+`/workspace` is the only persistent volume. Anything written to `/`, `/tmp`, `/dev/shm` or `/run` is destroyed the next time the image is rebuilt, and this instance has already been rebuilt at least once. The CLI enforces this: `exec`, `push`, `pull` and `run` refuse any path outside `/workspace` (and the HuggingFace cache) unless you pass `--allow-ephemeral`.
+
+`/workspace/env.sh` sets `PATH`, `HF_HOME` and `HSA_OVERRIDE_GFX_VERSION`, and the CLI sources it before every command. It is shared with the user's other projects and they edit it, so treat it as a moving target rather than a fixed fact: as of 2026-09-01 it points `PATH` at `/workspace/venv`, which carries the standard stack (torch 2.12.0+rocm7.14.0). Earlier it pointed at a venv with no torch at all. Run `rc env` to see the current truth.
+
+The CLI defends against both states: when `env.sh`'s default venv cannot import torch, `exec` and `run` automatically prepend a torch-capable venv and say so on stdout. `rc exec -- python -c "import torch"` therefore works with no extra flags in either case. Pass `--venv <path>` to choose one explicitly, or `--no-auto-venv` to disable the behaviour. The probe is cached for six hours in `~/.radeon-cloud-connector/venv-cache.json`; `rc doctor`, `rc env` and `rc status --torch` refresh it.
+
+Which venv is correct changes whenever the user rebuilds environments, and stale venvs get deleted outright during disk cleanups. Never copy a venv path out of this document into a command without checking `rc env` first; the candidate list is discovery-only and any named path may disappear after a rebuild or cleanup.
+
+Disk is the recurring failure mode on this box. `/workspace` reached 97% used (3.3 GiB free) in early September 2026 and had to be cleaned back to 50% before real work could continue; it fills up again quickly. Check `rc status` before pushing anything large, and prefer leaving model weights in the HuggingFace cache at `/root/.cache/huggingface`, which is a separate persistent host mount.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `guide` | Print the zero-to-first-result sequence, checked live against your current state. Start here on a cold machine. |
+| `doctor` | Layered check of ssh config, key, TCP reachability, auth, workspace, venv and GPU. Detects a rotated host key and offers a backed-up repair. |
+| `status [--torch]` | Live GPU temperature, power, VRAM, plus disk, memory, load and the torch inventory of every candidate venv. |
+| `exec -- <cmd>` | Run a command remotely, defaulting to `/workspace`, sourcing `env.sh`, with `--cwd`, `--timeout`, `--venv`, `--no-auto-venv`, `--stream`, `--dry-run`. |
+| `push <local> <remote>` | Upload a directory over tar+ssh (there is no local rsync). `--exclude` is repeatable. |
+| `pull <remote> <local>` | Download a remote directory. Refuses to clobber an existing local path unless `--overwrite`. |
+| `run --name <slug> -- <cmd>` | Start a detached job via `setsid`+`nohup`, recording pid and log under `/workspace/.rc-jobs`. |
+| `jobs` | List tracked jobs with a live/exited state derived from the remote pid. |
+| `logs <job-id> [-f] [-n N]` | Show or follow a job log. |
+| `stop <job-id> [--force]` | Terminate a job: SIGTERM by default, SIGKILL with `--force`. Idempotent on a job that already exited. |
+| `env` | Validate the whole remote contract, including the env.sh PATH cross-check. |
+| `config [--show|--set K=V|--reset]` | Local connector configuration, stored in `~/.radeon-cloud-connector/config.json`. |
+
+Exit codes: `0` success, `1` a real failure, `2` the remote host could not be reached or authenticated. A command that returns `2` always prints one actionable next step.
+
+## Workflows
+
+On a cold machine, run `rc guide` first; it tells you which step you are actually on rather than assuming a working setup. Otherwise check the box before starting anything: `rc doctor`, then `rc status`.
+
+Send code up and run it:
+
+```bash
+"$PY" "$RC" push ./myproject /workspace/myproject --exclude "*.log" --exclude "__pycache__"
+"$PY" "$RC" run --name train --cwd /workspace/myproject -- python train.py
+"$PY" "$RC" jobs
+"$PY" "$RC" logs <job-id> -f
+```
+
+Collect results afterwards with `rc pull /workspace/myproject/outputs ./outputs`.
+
+## Safety rails
+
+The CLI defaults to the persistent volume and requires `--allow-ephemeral` to write anywhere else; the refusal message names the path and the flag. Host-key repair backs up `known_hosts` first, removes only the entries for the exact target host and port (sibling containers on the same IP are untouched), prints the new fingerprints and asks before trusting them. `stop` always confirms unless `-y` is given. `push` and `pull` support `--dry-run`, and `pull` refuses to overwrite an existing local directory without `--overwrite`.
+
+Every command that needs the remote host fails fast with one actionable message instead of a raw ssh error or, worse, an empty success. An unknown ssh alias, a dead endpoint and a refused key are each reported in plain language with the exact thing to run next. A failing remote command is never dressed up as a connection problem: a `ModuleNotFoundError` stays a `ModuleNotFoundError`.
+
+Do not "fix" `/workspace/env.sh` on the remote host on your own initiative. Its PATH entry is wrong for torch work, but changing it could affect the user's other projects; report the mismatch and let them decide, or use `--venv` per command instead.
+
+## Self-verification
+
+`scripts/journey_check.py` replays the entire new-user journey and reviews the package. Run it after any change to `rc.py` or to this file.
+
+```bash
+"$PY" "$RC" --help >/dev/null                        # sanity
+"$PY" <skill-dir>/scripts/journey_check.py --phase review    # static 360 review, ~5s, no network
+"$PY" <skill-dir>/scripts/journey_check.py --phase journey   # full live journey, ~2min
+```
+
+It creates and removes a remote scratch directory under `/workspace` and leaves nothing behind.
+
+## References
+
+- `references/environment.md` — full machine profile, storage persistence rules, venv inventory, ROCm version strategy.
+- `references/troubleshooting.md` — known failures and their fixes, including host-key rotation and the no-torch venv.
+- `references/user-journey.md` — the zero-to-working journey map and the 360 degree review scheme.

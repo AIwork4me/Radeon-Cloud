@@ -1,0 +1,13 @@
+name: radeon-cloud-connector
+version: 0.1.0
+description: Operate and diagnose an AMD Radeon Cloud GPU workstation over a safe SSH CLI.
+triggers:
+  - radeon-cloud
+  - Radeon cloud
+  - Radeon 云
+  - ROCm 远程
+  - 远程 GPU
+  - 远程训练
+  - GPU 显存
+category: developer-tools
+requires_third_party_api_keys: false
