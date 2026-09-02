@@ -46,6 +46,41 @@ BOGUS_HOST = "rc-journey-nonexistent-host"
 EXIT_FAIL_EXPECTED = 1
 EXIT_CONNECT_EXPECTED = 2
 
+# Raw ssh error signatures that must NEVER reach a user's screen - the connector
+# is supposed to translate them into one actionable message. Used by the cold-start
+# UX checks (R6 / Stage 9) to prove nothing leaks through.
+RAW_SSH_MARKERS = (
+    "Permission denied",
+    "Could not resolve hostname",
+    "Connection refused",
+    "Connection timed out",
+    "REMOTE HOST IDENTIFICATION HAS CHANGED",
+)
+
+# rc.py prints its own 72-char `====...` section dividers in status/env output.
+# Those are legitimate formatting, NOT a raw rocm-smi dump, so the "no raw banner"
+# smoothness check must allow exactly-72 `=` lines and only flag a genuine
+# rocm-smi banner (a `=` line of a different width, or a `=`-wrapped title).
+SECTION_DIVIDER_LEN = 72
+
+
+def has_raw_rocm_banner(text: str) -> bool:
+    """True if `text` contains a raw rocm-smi dump banner rather than rc.py's own divider."""
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if set(s) == {"="}:
+            # A line of pure '=' is a banner unless it is rc.py's own divider width.
+            if len(s) != SECTION_DIVIDER_LEN:
+                return True
+            continue
+        # rocm-smi wraps a title in '=', e.g. "============ ROCm System Management
+        # Interface ============" - that is the dump we must never show a user.
+        if re.match(r"^=+\s.*\S.*\s=+$", s) or "ROCm System Management Interface" in s:
+            return True
+    return False
+
 GREEN, RED, YELLOW, DIM = "\033[32m", "\033[31m", "\033[33m", "\033[90m"
 RESET = "\033[0m"
 if os.environ.get("NO_COLOR") is not None or not sys.stdout.isatty():
@@ -95,13 +130,14 @@ class Results:
         return 1 if failed else 0
 
 
-def run_rc(*args: str, host: str | None = None, timeout: int = 180) -> tuple[int, str, str]:
+def run_rc(*args: str, host: str | None = None, timeout: int = 180,
+           env: dict | None = None) -> tuple[int, str, str]:
     cmd = list(RC)
     if host:
         cmd += ["--host", host]
     cmd += list(args)
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return 124, "", f"timed out after {timeout}s"
     return (
@@ -109,6 +145,18 @@ def run_rc(*args: str, host: str | None = None, timeout: int = 180) -> tuple[int
         proc.stdout.decode("utf-8", "replace"),
         proc.stderr.decode("utf-8", "replace"),
     )
+
+
+def ux_env(home: Path) -> dict:
+    """An environment that redirects the CLI's notion of HOME at a temp dir.
+
+    On Windows `Path.home()` honours USERPROFILE, not HOME, and ssh does too, so
+    both must be pointed at the temp dir for a faithful isolated cold-start.
+    """
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    return env
 
 
 def sha256_file(path: Path) -> str:
@@ -159,6 +207,7 @@ def phase_journey(res: Results, keep: bool) -> None:
         # -- Stage 1 -------------------------------------------------------
         res.stage("1. first contact - a cold user's first two commands")
         rc_code, out, err = run_rc("guide")
+        guide_out = out  # J1.9 needs the guide text specifically, not the doctor output below
         res.check("J1.1", "`rc guide` exits 0", rc_code == 0, f"exit={rc_code}")
         res.check("J1.2", "`rc guide` confirms step 1 connected", "step 1  connected" in out)
         res.check("J1.3", "`rc guide` confirms step 2 GPU + torch ready", "step 2" in out and "torch" in out)
@@ -175,9 +224,15 @@ def phase_journey(res: Results, keep: bool) -> None:
                   bool(re.search(r"ssh config resolves: \S+@\S+:\d+", out)),
                   next((ln.strip() for ln in out.splitlines() if "ssh config resolves" in ln), ""))
 
+        steps = re.findall(r"step \d+", guide_out)
+        res.check("J1.9", "guide narrates every step (step 1..step 8) on its own line",
+                  "step 1" in guide_out and "step 8" in guide_out and len(steps) >= 8,
+                  f"{len(steps)} 'step N' labels found")
+
         # -- Stage 2 -------------------------------------------------------
         res.stage("2. understanding the machine")
         rc_code, out, err = run_rc("status", timeout=180)
+        status_out = out  # J2.10 needs the STATUS text, not the env output below
         res.check("J2.1", "`rc status` exits 0", rc_code == 0, f"exit={rc_code}")
         res.check("J2.2", "status reports a GPU", "GPU[0]" in out)
         res.check("J2.3", "status reports disk", "disk" in out and "GiB free" in out)
@@ -193,6 +248,12 @@ def phase_journey(res: Results, keep: bool) -> None:
         res.check("J2.9", "env reports on whether env.sh's default venv has torch",
                   ("[WARN]" in out) or ("env.sh PATH head resolves to a torch-capable venv" in out),
                   "either an explicit warning or a clean bill of health")
+
+        status_lines = status_out.splitlines()
+        max_len = max((len(ln) for ln in status_lines), default=0)
+        res.check("J2.10", "status is scannable: distilled GPU line, no raw rocm-smi banner, no 200+ char lines",
+                  "GPU[0]" in status_out and not has_raw_rocm_banner(status_out) and max_len <= 200,
+                  f"max_line={max_len}, banner={'yes' if has_raw_rocm_banner(status_out) else 'no'}")
 
         # -- Stage 3 -------------------------------------------------------
         res.stage("3. the aha moment - first GPU computation")
@@ -429,6 +490,65 @@ def phase_journey(res: Results, keep: bool) -> None:
         res.check("J7.7", "auto-venv's decision matches the machine's actual venvs",
                   ok, detail)
 
+        # -- Stage 9 -------------------------------------------------------
+        res.stage("9. cold-start UX - a simulated brand-new user")
+        # Faithful cold-start test: run the CLI against a TEMP HOME so we never
+        # touch the operator's real ~/.ssh/config. Scenario A has no alias at all
+        # (must bail with the one clear guide message, fully offline). Scenario B
+        # copies the operator's real ~/.ssh into the temp HOME (an isolated copy,
+        # private key included, deleted afterwards) so the box is reachable, then
+        # asserts the full path is one-pass and smooth.
+        ux_home = Path(tempfile.mkdtemp(prefix="rc-ux-"))
+        guide_url = rc.CONNECTION_GUIDE_URL
+        try:
+            # Scenario A - cold, no alias (fails before any SSH, fully offline).
+            rc_a, out_a, err_a = run_rc("status", env=ux_env(ux_home))
+            body_a = out_a + err_a
+            res.check("J9.1", "cold start (no alias): `status` exits with the connection code",
+                      rc_a == EXIT_CONNECT_EXPECTED, f"exit={rc_a}")
+            res.check("J9.2", "cold start (no alias): surfaces the connection guide link",
+                      guide_url in body_a, "guide link present" if guide_url in body_a else "no link")
+            res.check("J9.3", "cold start (no alias): ONE failure, not a cascade",
+                      body_a.count("[FAIL]") <= 2, f"{body_a.count('[FAIL]')} [FAIL]")
+            res.check("J9.4", "cold start (no alias): no raw ssh error leaks through",
+                      not any(m in body_a for m in RAW_SSH_MARKERS),
+                      next((m for m in RAW_SSH_MARKERS if m in body_a), "translated"))
+            rc_ag, out_ag, err_ag = run_rc("guide", env=ux_env(ux_home))
+            res.check("J9.5", "cold start: `guide` (documented first cmd) bails to the guide link",
+                      rc_ag == EXIT_CONNECT_EXPECTED and guide_url in (out_ag + err_ag), f"exit={rc_ag}")
+
+            # Scenario B - alias configured (isolated copy of the real ~/.ssh).
+            real_ssh = Path.home() / ".ssh"
+            if real_ssh.exists():
+                shutil.copytree(real_ssh, ux_home / ".ssh")
+                # Auto-accept the host key on first connect into the temp known_hosts
+                # so the isolated copy never blocks on a known_hosts prompt.
+                cfg_txt = (ux_home / ".ssh" / "config").read_text(encoding="utf-8", errors="replace")
+                extra = "\nStrictHostKeyChecking accept-new\nUserKnownHostsFile {}/.ssh/known_hosts\n".format(ux_home)
+                (ux_home / ".ssh" / "config").write_text(cfg_txt + extra, encoding="utf-8")
+                env_b = ux_env(ux_home)
+                rc_b1, out_b1, err_b1 = run_rc("guide", env=env_b, timeout=180)
+                res.check("J9.6", "connected (isolated): `guide` reaches step 1 connected one-pass",
+                          rc_b1 == 0 and "step 1  connected" in out_b1, f"exit={rc_b1}")
+                rc_b2, out_b2, err_b2 = run_rc("doctor", env=env_b, timeout=180)
+                res.check("J9.7", "connected (isolated): `doctor` is green, no [FAIL]",
+                          rc_b2 == 0 and "[FAIL]" not in out_b2, f"exit={rc_b2}")
+                rc_b3, out_b3, err_b3 = run_rc("status", env=env_b, timeout=180)
+                res.check("J9.8", "connected (isolated): `status` is scannable (distilled GPU line)",
+                          rc_b3 == 0 and "GPU[0]" in out_b3 and not has_raw_rocm_banner(out_b3),
+                          f"exit={rc_b3}")
+                rc_b4, out_b4, err_b4 = run_rc("exec", "--", "python", "-c",
+                                              "import torch; print('UX', torch.cuda.is_available())",
+                                              env=env_b, timeout=240)
+                res.check("J9.9", "connected (isolated): first GPU command works with no flags",
+                          rc_b4 == 0 and "UX True" in out_b4, f"exit={rc_b4} {err_b4.strip()[:80]}")
+            else:
+                res.check("J9.6", "connected (isolated): real ~/.ssh present to copy",
+                          False, "skipped - no ~/.ssh on this machine")
+        finally:
+            shutil.rmtree(ux_home, ignore_errors=True)
+            res.check("J9.10", "cold-start temp HOME cleaned up", not ux_home.exists())
+
     finally:
         # -- Stage 8 -------------------------------------------------------
         res.stage("8. leaving no trace")
@@ -637,6 +757,59 @@ def phase_review(res: Results) -> None:
         body = re.search(rf"def {cmd_name}\(.*?(?=\ndef |\Z)", src, re.S)
         res.check(f"R5.2.{cmd_name[4:]}", f"{cmd_name[4:]} calls require_remote (no silent success)",
                   bool(body) and "require_remote(" in body.group(0))
+
+    res.stage("R6. cold-start UX and smoothness (offline)")
+    # The bug-fix guarantee, checked WITHOUT a real box so static CI stays green:
+    # a missing radeon-cloud alias must surface ONE clear, actionable message that
+    # points at the connection setup guide - never a cascade of raw ssh errors.
+    guide_url = rc.CONNECTION_GUIDE_URL
+
+    def _bogus(*a):
+        return run_rc(*a, host=BOGUS_HOST)
+
+    rc_s, out_s, err_s = _bogus("status")
+    body_s = out_s + err_s
+    res.check("R6.1", "missing alias: `status` exits with the connection code",
+              rc_s == EXIT_CONNECT_EXPECTED, f"exit={rc_s}")
+    res.check("R6.2", "missing alias: `status` points at the connection setup guide",
+              guide_url in body_s, "guide link present" if guide_url in body_s else "no guide link")
+    res.check("R6.3", "missing alias: ONE failure, not a cascade",
+              body_s.count("[FAIL]") <= 2, f"{body_s.count('[FAIL]')} [FAIL] line(s)")
+    res.check("R6.4", "missing alias: no raw ssh error leaks through",
+              not any(m in body_s for m in RAW_SSH_MARKERS),
+              next((m for m in RAW_SSH_MARKERS if m in body_s), "translated"))
+
+    rc_d, out_d, err_d = _bogus("doctor")
+    body_d = out_d + err_d
+    res.check("R6.5", "missing alias: `doctor` also points at the guide, no cascade",
+              rc_d != 0 and guide_url in body_d and body_d.count("[FAIL]") <= 2,
+              f"exit={rc_d}, {body_d.count('[FAIL]')} [FAIL]")
+
+    rc_g, out_g, err_g = _bogus("guide")
+    res.check("R6.6", "missing alias: `guide` (documented first cmd) bails to the guide link",
+              rc_g == EXIT_CONNECT_EXPECTED and guide_url in (out_g + err_g),
+              f"exit={rc_g}, guide={'yes' if guide_url in (out_g + err_g) else 'no'}")
+
+    # Unit-level regression for the exact required hint text and the gate wiring.
+    expected_hint = ("If ssh radeon-cloud fails or there is no radeon-cloud alias, "
+                     "complete the connection setup first: "
+                     "\u5728 Windows \u6216 MacBook \u4e0a\u8fde\u63a5 Radeon Cloud "
+                     "(https://mp.weixin.qq.com/s/dOAIzJ2qsWPmBSH67q41aA)")
+    res.check("R6.7", "connection_setup_hint() returns the exact required text",
+              rc.connection_setup_hint() == expected_hint,
+              "exact match" if rc.connection_setup_hint() == expected_hint else "mismatch")
+    res.check("R6.8", "require_ssh_alias() is defined and wired into require_remote",
+              hasattr(rc, "require_ssh_alias")
+              and "require_ssh_alias(" in re.search(r"def require_remote\(.*?(?=\ndef |\Z)", code, re.S).group(0),
+              "gate present")
+
+    # The other half of the fix: the skill must never ship a hard-coded endpoint.
+    ip_hits = [rel for rel in ("scripts/rc.py", "references/environment.md", "SKILL.md")
+               if (SKILL_DIR / rel).exists()
+               and re.search(r"36\.150\.116\.220|31622",
+                             (SKILL_DIR / rel).read_text(encoding="utf-8", errors="replace"))]
+    res.check("R6.9", "no hard-coded public IP:port in shipped skill files",
+              not ip_hits, ", ".join(ip_hits) or "clean")
 
 
 # --------------------------------------------------------------------------
