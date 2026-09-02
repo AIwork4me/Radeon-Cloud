@@ -62,6 +62,8 @@ Exit codes: `0` success, `1` a real failure, `2` the remote host could not be re
 
 On a cold machine, run `rc guide` first; it tells you which step you are actually on rather than assuming a working setup. Otherwise check the box before starting anything: `rc doctor`, then `rc status`.
 
+If `ssh radeon-cloud` fails outright (before `rc` can run at all), complete the connection setup first: [在 Windows 或 MacBook 上连接 Radeon Cloud](https://mp.weixin.qq.com/s/dOAIzJ2qsWPmBSH67q41aA).
+
 Send code up and run it:
 
 ```bash
