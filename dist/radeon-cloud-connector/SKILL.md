@@ -2,12 +2,17 @@
 name: radeon-cloud-connector
 description: "Operate the remote AMD Radeon cloud GPU workstation reached through the ssh alias `radeon-cloud`. Use to connect or diagnose SSH to that box, inspect ROCm/GPU status and the torch environment, run commands there, sync code to and from /workspace, and start, monitor or stop long-running training and benchmark jobs. Triggers: radeon-cloud, Radeon cloud, Radeon 云, ROCm 远程, 远程 GPU, rocm-smi, gfx1100, 上传到 radeon, 下载结果, 跑训练, 后台任务, GPU 显存."
 agent_created: true
-version: 0.1.0
+version: 1.0.1
 category: developer-tools
 platforms: [windows, macos, linux]
 ---
 
 # Radeon Cloud Connector
+
+> Security model and credential handling are documented in
+> [`SECURITY.md`](SECURITY.md) — the skill never reads your SSH private key,
+> only ever targets your configured `radeon-cloud` alias, and audits every
+> remote command.
 
 ## Overview
 

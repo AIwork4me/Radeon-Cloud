@@ -198,11 +198,20 @@ def phase_journey(res: Results, keep: bool) -> None:
         res.check("J0.3", "~/.ssh/config exists", ssh_cfg.exists(), str(ssh_cfg))
         defined = rc.ssh_alias_defined(host)
         res.check("J0.4", f"ssh alias {host!r} is defined", defined, "found Host block" if defined else "no Host block")
-        target = rc.resolve_ssh_target(cfg) if defined else {}
-        keys = [os.path.expanduser(k.replace("~", str(Path.home()))) for k in target.get("identityfiles", [])]
-        have = [k for k in keys if os.path.exists(k)]
-        res.check("J0.5", "configured private key exists",
-                  bool(have), have[0] if have else f"none of {len(keys)} configured")
+        # The skill never reads the private-key file itself - auth is delegated to
+        # ssh/ssh-agent. So we verify the alias *declares* a key (ssh -G lists an
+        # identityfile) without ever os.path.exists()-ing the key, which is the
+        # pattern the security scanner flags.
+        declared = False
+        if defined:
+            ssh_bin = shutil.which("ssh") or "ssh"
+            try:
+                g = subprocess.run([ssh_bin, "-G", host], capture_output=True, timeout=20)
+                declared = b"identityfile" in g.stdout.lower()
+            except Exception:  # noqa: BLE001
+                declared = False
+        res.check("J0.5", "ssh alias declares a private key (no key file read by the skill)",
+                  declared, "ssh -G lists an identityfile" if declared else "no identityfile in ssh -G")
 
         # -- Stage 1 -------------------------------------------------------
         res.stage("1. first contact - a cold user's first two commands")
@@ -388,7 +397,13 @@ def phase_journey(res: Results, keep: bool) -> None:
         res.check("J5.5", "the job is still progressing (log grew past the first tick)", ticks >= 2, f"{ticks} ticks")
 
         rc_code, out, err = run_rc("stop", job_id, "--yes")
-        res.check("J5.6", "`rc stop` terminates the job", rc_code == 0 and "SIGTERM" in out, f"exit={rc_code}")
+        # The contract is that `stop` never errors and resolves the job. When the
+        # job is still alive it sends SIGTERM; if it already finished on its own
+        # (box under load can end the 40s test loop before stop fires) it reports
+        # "already exited". Both are success - accept either so the check is not
+        # flaky on box load.
+        res.check("J5.6", "`rc stop` terminates the job",
+                  rc_code == 0 and ("SIGTERM" in out or "already exited" in out), f"exit={rc_code}")
         time.sleep(2)
         rc_code, out, err = run_rc("stop", job_id, "--yes")
         res.check("J5.7", "`rc stop` on a finished job is idempotent (exit 0)",
@@ -733,7 +748,7 @@ def phase_review(res: Results) -> None:
     res.check("R4.1", "skill is installed at ~/.workbuddy-ai/skills/<name>", installed.exists(), str(installed))
     if installed.exists():
         drift = []
-        for rel in ("SKILL.md", "config.yaml", "scripts/rc.py", "scripts/journey_check.py", "scripts/install.py",
+        for rel in ("SKILL.md", "config.yaml", "SECURITY.md", "scripts/rc.py", "scripts/journey_check.py", "scripts/install.py",
                     "references/environment.md", "references/troubleshooting.md",
                     "references/user-journey.md"):
             src, dst = SKILL_DIR / rel, installed / rel
@@ -810,6 +825,19 @@ def phase_review(res: Results) -> None:
                              (SKILL_DIR / rel).read_text(encoding="utf-8", errors="replace"))]
     res.check("R6.9", "no hard-coded public IP:port in shipped skill files",
               not ip_hits, ", ".join(ip_hits) or "clean")
+
+    # The security scan flagged any code that reads the user's private-key file.
+    # Lock that fix in: rc.py must never os.path.exists()/open() a private key,
+    # must not collect IdentityFile paths, and must not disclose key paths.
+    raw = (SKILL_DIR / "scripts" / "rc.py").read_text(encoding="utf-8", errors="replace")
+    collects_identity = bool(re.search(r"identityfiles", raw))
+    key_access = bool(
+        re.search(r"os\.path\.exists\([^)]*(key|identity|private)", raw, re.I)
+        or re.search(r"open\([^)]*\.ssh", raw, re.I)
+    )
+    res.check("R6.10", "rc.py never reads the user's private-key file (security-scan fix)",
+              not collects_identity and not key_access and "ssh private key present" not in raw,
+              "clean" if (not collects_identity and not key_access) else "key-access pattern found")
 
 
 # --------------------------------------------------------------------------

@@ -28,6 +28,7 @@ ZIP_PATH = SKILL_DIR / "dist" / "radeon-cloud-connector.zip"
 TRACKED = (
     "SKILL.md",
     "config.yaml",
+    "SECURITY.md",
     "scripts/rc.py",
     "scripts/journey_check.py",
     "scripts/install.py",

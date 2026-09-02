@@ -1,5 +1,5 @@
 name: radeon-cloud-connector
-version: 0.1.0
+version: 1.0.1
 description: Operate and diagnose an AMD Radeon Cloud GPU workstation over a safe SSH CLI.
 triggers:
   - radeon-cloud

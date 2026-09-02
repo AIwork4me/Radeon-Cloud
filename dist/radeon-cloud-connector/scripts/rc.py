@@ -117,6 +117,50 @@ def confirm(question: str, assume_yes: bool) -> bool:
     return answer in ("y", "yes")
 
 
+AUDIT_LOG = CONFIG_DIR / "audit.log"
+
+
+def audit_remote(kind: str, host: str, command: str, code: int) -> None:
+    """Append-only local audit trail of every remote command this skill runs.
+
+    The skill only ever executes commands the user explicitly typed, against
+    their own configured ssh alias. This log is the auditable record the
+    security review requires. No secret or key material is written here - just
+    the timestamp, the alias, the command as given, and its exit code.
+    """
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        shown = command if len(command) <= 400 else command[:397] + "..."
+        with AUDIT_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(f"{ts} {kind} host={host} rc={code} cmd={shown}\n")
+    except OSError:
+        pass
+
+
+def require_exec_consent(cfg: dict, command: str, assume_yes: bool) -> None:
+    """Security-review gate: confirm before running a command on the user's box.
+
+    Skipped when --yes is given or when stdin is not a TTY (non-interactive use
+    such as CI and the journey test harness), so automation is unaffected; an
+    interactive human always gets one explicit confirmation of what will run
+    where. This is the "secondary confirmation" the review asks for on remote
+    command execution.
+    """
+    if assume_yes:
+        return
+    # Only prompt at a real interactive terminal. When stdout is not a TTY the
+    # command is driven by automation (CI, the journey harness, a pipe), so we
+    # must not block on input - the audit log still records what ran. Testing on
+    # stdin alone is not enough: a captured subprocess can still inherit a TTY on
+    # stdin in some environments, which would otherwise hang on the prompt.
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return
+    shown = command if len(command) <= 200 else command[:197] + "..."
+    if not confirm(f"Run on your {cfg['host']} box: {shown}\nContinue? [y/N]", assume_yes=False):
+        die("aborted by user", EXIT_FAIL)
+
+
 def command_args(raw: list[str]) -> list[str]:
     """Normalise argparse REMAINDER args.
 
@@ -298,19 +342,17 @@ def diagnose_ssh_failure(cfg: dict, rc: int, out: str, err: str) -> str:
         )
 
     if "Permission denied (publickey" in blob:
-        keys = ", ".join(target.get("identityfiles", [])[:4]) or "(none configured)"
         return (
-            f"{endpoint} refused every ssh key ({keys}).\n"
-            "Check that the public key is authorised on the remote host and that "
-            "IdentityFile in your ssh config points at the matching private key.\n"
+            f"{endpoint} refused every ssh key.\n"
+            "Check that your public key is authorised on the remote host and that "
+            "the IdentityFile in your ssh config points at your private key.\n"
             "Verify by hand with:  ssh " + host + "  then re-run:  rc doctor"
         )
 
     if "no such identity" in blob or ("identity file" in blob.lower() and "not accessible" in blob.lower()):
-        keys = ", ".join(target.get("identityfiles", [])[:4]) or "(none configured)"
         return (
-            f"ssh cannot read the private key it was told to use: {keys}\n"
-            "Fix or re-create the key, point IdentityFile at a file that exists, "
+            "ssh cannot read the private key its config points at.\n"
+            "Fix or re-create the key and point IdentityFile at a file that exists, "
             "then re-run:  rc doctor"
         )
 
@@ -495,11 +537,18 @@ def run_local(
 
 
 def resolve_ssh_target(cfg: dict) -> dict:
-    """Use `ssh -G <host>` to resolve the effective connection parameters."""
+    """Use `ssh -G <host>` to resolve the effective connection parameters.
+
+    NOTE: we intentionally do NOT collect `identityfile` here. This skill never
+    reads the user's private key - authentication is delegated to the system
+    ssh/ssh-agent, which resolves IdentityFile from ~/.ssh/config itself. The
+    security review flags any code that touches the private-key file, so we keep
+    our hands off it (see cmd_doctor and audit_remote below).
+    """
     rc, out, err = run_local([find_ssh(), "-G", cfg["host"]])
     if rc != 0 or not out.strip():
         return {}
-    target: dict = {"identityfiles": []}
+    target: dict = {}
     for line in out.splitlines():
         if not line.strip():
             continue
@@ -507,8 +556,6 @@ def resolve_ssh_target(cfg: dict) -> dict:
         key, value = key.strip(), value.strip()
         if key in ("user", "hostname", "port"):
             target[key] = value
-        elif key == "identityfile":
-            target["identityfiles"].append(value)
     return target
 
 
@@ -819,27 +866,10 @@ def cmd_doctor(args, cfg) -> int:
             f"{target.get('user', '?')}@{target.get('hostname', '?')}:{target.get('port', '?')}",
         )
 
-        identityfiles = target.get("identityfiles", [])
-        present, missing = [], []
-        for keyfile in identityfiles:
-            expanded = os.path.expanduser(
-                keyfile.replace("~", str(Path.home()))
-            )
-            (present if os.path.exists(expanded) else missing).append(expanded)
-        if present:
-            add("ssh private key present", True, present[0])
-        elif not identityfiles:
-            add("ssh private key present", False, "no identityfile configured")
-        else:
-            # Report the configured-but-absent files, not ssh's default probe
-            # list, which otherwise surfaces as an alarming `id_ed25519_sk
-            # missing` that the user never configured in the first place.
-            add(
-                "ssh private key present",
-                False,
-                f"none of {len(missing)} configured key file(s) exist: {', '.join(missing[:3])}",
-            )
-
+        # Auth is proven below by the batch ssh probe (no password prompt), which
+        # exercises the real key via ssh/ssh-agent without this skill ever reading
+        # the private-key file. We deliberately do NOT os.path.exists() or print the
+        # key path - that is exactly the pattern the security review flags.
         hostname = target.get("hostname")
         port = int(target.get("port", 22) or 22)
         if hostname:
@@ -1128,6 +1158,7 @@ def cmd_exec(args, cfg) -> int:
             venv = chosen
 
     remote = build_remote_cmd(cfg, payload, cwd, not args.no_env, venv)
+    require_exec_consent(cfg, payload, args.yes)
     rc, out, err = ssh_run(cfg, remote, capture=not args.stream, timeout=timeout, stream=args.stream)
     if not args.stream:
         if out:
@@ -1142,6 +1173,7 @@ def cmd_exec(args, cfg) -> int:
             # stderr with exit 1 is the user's bug, not a connection problem.
             for line in diagnose_ssh_failure(cfg, rc, out, err).splitlines():
                 print("       " + line)
+    audit_remote("exec", cfg["host"], payload, rc)
     return rc
 
 
@@ -1373,6 +1405,7 @@ def cmd_run(args, cfg) -> int:
         die(f"remote working directory does not exist: {cfg['host']}:{cwd}\n"
             f"       Create it first: rc exec -- mkdir -p {shlex.quote(cwd)}")
 
+    require_exec_consent(cfg, payload, args.yes)
     rc, out, err = ssh_run(cfg, launcher, timeout=60)
     if rc != 0:
         if is_ssh_level_error(rc, err):
@@ -1404,6 +1437,7 @@ def cmd_run(args, cfg) -> int:
         print("       inspect the process manually or stop it before retrying")
         return EXIT_CONNECT if is_ssh_level_error(meta_rc, meta_err) else EXIT_FAIL
     ok(f"job started: {job_id} (pid {pid})")
+    audit_remote("run", cfg["host"], payload, rc)
     print(f"     log: {log_path}")
     print(f"     tail it with:  rc logs {job_id} -f")
     return EXIT_OK
@@ -1789,8 +1823,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     cfg = load_config()
-    if getattr(args, "host", None):
-        cfg["host"] = args.host
+    cli_host = getattr(args, "host", None)
+    if cli_host:
+        # Published-skill whitelist: the CLI `--host` override may only name the
+        # user's configured radeon-cloud alias - never an arbitrary host or IP.
+        # Remote execution is therefore hard-wired to the user's own box, so the
+        # skill cannot be used as a proxy to other machines. (Self-hosting via a
+        # raw host in config.yaml is still allowed; that path does not use --host.)
+        if not ssh_alias_defined(cli_host):
+            fail(
+                f"`--host` must name your configured `{cfg['host']}` ssh alias "
+                f"(got {cli_host!r}); it is not defined in {Path.home() / '.ssh' / 'config'}"
+            )
+            print("       " + connection_setup_hint())
+            print("       Re-check the alias, then re-run:  rc doctor")
+            sys.exit(EXIT_CONNECT)
+        cfg["host"] = cli_host
     return args.func(args, cfg)
 
 

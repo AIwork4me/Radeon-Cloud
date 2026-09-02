@@ -21,7 +21,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SKILL_DIR = HERE.parent
 
-TRACKED = ("SKILL.md", "config.yaml", "scripts/rc.py", "scripts/journey_check.py", "scripts/install.py",
+TRACKED = ("SKILL.md", "config.yaml", "SECURITY.md", "scripts/rc.py", "scripts/journey_check.py", "scripts/install.py",
            "references/environment.md", "references/troubleshooting.md", "references/user-journey.md")
 
 

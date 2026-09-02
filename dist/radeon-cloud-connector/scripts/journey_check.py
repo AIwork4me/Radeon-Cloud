@@ -57,6 +57,30 @@ RAW_SSH_MARKERS = (
     "REMOTE HOST IDENTIFICATION HAS CHANGED",
 )
 
+# rc.py prints its own 72-char `====...` section dividers in status/env output.
+# Those are legitimate formatting, NOT a raw rocm-smi dump, so the "no raw banner"
+# smoothness check must allow exactly-72 `=` lines and only flag a genuine
+# rocm-smi banner (a `=` line of a different width, or a `=`-wrapped title).
+SECTION_DIVIDER_LEN = 72
+
+
+def has_raw_rocm_banner(text: str) -> bool:
+    """True if `text` contains a raw rocm-smi dump banner rather than rc.py's own divider."""
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if set(s) == {"="}:
+            # A line of pure '=' is a banner unless it is rc.py's own divider width.
+            if len(s) != SECTION_DIVIDER_LEN:
+                return True
+            continue
+        # rocm-smi wraps a title in '=', e.g. "============ ROCm System Management
+        # Interface ============" - that is the dump we must never show a user.
+        if re.match(r"^=+\s.*\S.*\s=+$", s) or "ROCm System Management Interface" in s:
+            return True
+    return False
+
 GREEN, RED, YELLOW, DIM = "\033[32m", "\033[31m", "\033[33m", "\033[90m"
 RESET = "\033[0m"
 if os.environ.get("NO_COLOR") is not None or not sys.stdout.isatty():
@@ -174,15 +198,25 @@ def phase_journey(res: Results, keep: bool) -> None:
         res.check("J0.3", "~/.ssh/config exists", ssh_cfg.exists(), str(ssh_cfg))
         defined = rc.ssh_alias_defined(host)
         res.check("J0.4", f"ssh alias {host!r} is defined", defined, "found Host block" if defined else "no Host block")
-        target = rc.resolve_ssh_target(cfg) if defined else {}
-        keys = [os.path.expanduser(k.replace("~", str(Path.home()))) for k in target.get("identityfiles", [])]
-        have = [k for k in keys if os.path.exists(k)]
-        res.check("J0.5", "configured private key exists",
-                  bool(have), have[0] if have else f"none of {len(keys)} configured")
+        # The skill never reads the private-key file itself - auth is delegated to
+        # ssh/ssh-agent. So we verify the alias *declares* a key (ssh -G lists an
+        # identityfile) without ever os.path.exists()-ing the key, which is the
+        # pattern the security scanner flags.
+        declared = False
+        if defined:
+            ssh_bin = shutil.which("ssh") or "ssh"
+            try:
+                g = subprocess.run([ssh_bin, "-G", host], capture_output=True, timeout=20)
+                declared = b"identityfile" in g.stdout.lower()
+            except Exception:  # noqa: BLE001
+                declared = False
+        res.check("J0.5", "ssh alias declares a private key (no key file read by the skill)",
+                  declared, "ssh -G lists an identityfile" if declared else "no identityfile in ssh -G")
 
         # -- Stage 1 -------------------------------------------------------
         res.stage("1. first contact - a cold user's first two commands")
         rc_code, out, err = run_rc("guide")
+        guide_out = out  # J1.9 needs the guide text specifically, not the doctor output below
         res.check("J1.1", "`rc guide` exits 0", rc_code == 0, f"exit={rc_code}")
         res.check("J1.2", "`rc guide` confirms step 1 connected", "step 1  connected" in out)
         res.check("J1.3", "`rc guide` confirms step 2 GPU + torch ready", "step 2" in out and "torch" in out)
@@ -199,14 +233,15 @@ def phase_journey(res: Results, keep: bool) -> None:
                   bool(re.search(r"ssh config resolves: \S+@\S+:\d+", out)),
                   next((ln.strip() for ln in out.splitlines() if "ssh config resolves" in ln), ""))
 
-        steps = re.findall(r"step \d+", out)
+        steps = re.findall(r"step \d+", guide_out)
         res.check("J1.9", "guide narrates every step (step 1..step 8) on its own line",
-                  "step 1" in out and "step 8" in out and len(steps) >= 8,
+                  "step 1" in guide_out and "step 8" in guide_out and len(steps) >= 8,
                   f"{len(steps)} 'step N' labels found")
 
         # -- Stage 2 -------------------------------------------------------
         res.stage("2. understanding the machine")
         rc_code, out, err = run_rc("status", timeout=180)
+        status_out = out  # J2.10 needs the STATUS text, not the env output below
         res.check("J2.1", "`rc status` exits 0", rc_code == 0, f"exit={rc_code}")
         res.check("J2.2", "status reports a GPU", "GPU[0]" in out)
         res.check("J2.3", "status reports disk", "disk" in out and "GiB free" in out)
@@ -223,11 +258,11 @@ def phase_journey(res: Results, keep: bool) -> None:
                   ("[WARN]" in out) or ("env.sh PATH head resolves to a torch-capable venv" in out),
                   "either an explicit warning or a clean bill of health")
 
-        status_lines = out.splitlines()
+        status_lines = status_out.splitlines()
         max_len = max((len(ln) for ln in status_lines), default=0)
         res.check("J2.10", "status is scannable: distilled GPU line, no raw rocm-smi banner, no 200+ char lines",
-                  "GPU[0]" in out and not re.search(r"={10,}", out) and max_len <= 200,
-                  f"max_line={max_len}, banner={'yes' if re.search(r'={10,}', out) else 'no'}")
+                  "GPU[0]" in status_out and not has_raw_rocm_banner(status_out) and max_len <= 200,
+                  f"max_line={max_len}, banner={'yes' if has_raw_rocm_banner(status_out) else 'no'}")
 
         # -- Stage 3 -------------------------------------------------------
         res.stage("3. the aha moment - first GPU computation")
@@ -509,7 +544,7 @@ def phase_journey(res: Results, keep: bool) -> None:
                           rc_b2 == 0 and "[FAIL]" not in out_b2, f"exit={rc_b2}")
                 rc_b3, out_b3, err_b3 = run_rc("status", env=env_b, timeout=180)
                 res.check("J9.8", "connected (isolated): `status` is scannable (distilled GPU line)",
-                          rc_b3 == 0 and "GPU[0]" in out_b3 and not re.search(r"={10,}", out_b3),
+                          rc_b3 == 0 and "GPU[0]" in out_b3 and not has_raw_rocm_banner(out_b3),
                           f"exit={rc_b3}")
                 rc_b4, out_b4, err_b4 = run_rc("exec", "--", "python", "-c",
                                               "import torch; print('UX', torch.cuda.is_available())",
@@ -707,7 +742,7 @@ def phase_review(res: Results) -> None:
     res.check("R4.1", "skill is installed at ~/.workbuddy-ai/skills/<name>", installed.exists(), str(installed))
     if installed.exists():
         drift = []
-        for rel in ("SKILL.md", "config.yaml", "scripts/rc.py", "scripts/journey_check.py", "scripts/install.py",
+        for rel in ("SKILL.md", "config.yaml", "SECURITY.md", "scripts/rc.py", "scripts/journey_check.py", "scripts/install.py",
                     "references/environment.md", "references/troubleshooting.md",
                     "references/user-journey.md"):
             src, dst = SKILL_DIR / rel, installed / rel
@@ -784,6 +819,19 @@ def phase_review(res: Results) -> None:
                              (SKILL_DIR / rel).read_text(encoding="utf-8", errors="replace"))]
     res.check("R6.9", "no hard-coded public IP:port in shipped skill files",
               not ip_hits, ", ".join(ip_hits) or "clean")
+
+    # The security scan flagged any code that reads the user's private-key file.
+    # Lock that fix in: rc.py must never os.path.exists()/open() a private key,
+    # must not collect IdentityFile paths, and must not disclose key paths.
+    raw = (SKILL_DIR / "scripts" / "rc.py").read_text(encoding="utf-8", errors="replace")
+    collects_identity = bool(re.search(r"identityfiles", raw))
+    key_access = bool(
+        re.search(r"os\.path\.exists\([^)]*(key|identity|private)", raw, re.I)
+        or re.search(r"open\([^)]*\.ssh", raw, re.I)
+    )
+    res.check("R6.10", "rc.py never reads the user's private-key file (security-scan fix)",
+              not collects_identity and not key_access and "ssh private key present" not in raw,
+              "clean" if (not collects_identity and not key_access) else "key-access pattern found")
 
 
 # --------------------------------------------------------------------------
