@@ -379,6 +379,11 @@ def phase_journey(res: Results, keep: bool) -> None:
                   and host_after == host_before == EXIT_CONNECT_EXPECTED,
                   f"stop {after_sub}/{before_sub}, status {host_after}/{host_before}")
 
+        rc_code, out, err = run_rc("status", host=BOGUS_HOST)
+        res.check("J6.12", "unknown alias: points the user to the connection setup guide",
+                  rc.CONNECTION_GUIDE_URL in (out + err),
+                  "guide link present" if rc.CONNECTION_GUIDE_URL in (out + err) else "no guide link")
+
         rc_code, out, err = run_rc("exec", "--", "python", "-c", "import definitely_not_installed")
         res.check("J6.10", "a failing remote command is NOT mislabelled as an ssh error",
                   rc_code != 0 and "ssh alias" not in out + err and "cannot reach" not in out + err,

@@ -343,6 +343,11 @@ def require_remote(cfg: dict, what: str) -> None:
     Without this, a dead connection produces empty output plus exit code 0,
     which reads as success and is the single worst failure mode for a new user.
     """
+    # Connection-first gate: the `radeon-cloud` alias must exist before any
+    # remote work. This makes "connect Radeon Cloud" step 0 of every skill use -
+    # we never proceed against a missing or unconfigured endpoint, and we never
+    # hard-code an IP:port to fall back on.
+    require_ssh_alias(cfg, what)
     budget = max(30, int(cfg.get("connect_timeout", 20)) + 15)
     rc, out, err = ssh_run(cfg, "echo __RC_ONLINE__", timeout=budget)
     if rc == 0 and "__RC_ONLINE__" in out:
@@ -350,6 +355,54 @@ def require_remote(cfg: dict, what: str) -> None:
     fail(f"cannot reach the remote workstation, so `{what}` cannot run")
     for line in diagnose_ssh_failure(cfg, rc, out, err).splitlines():
         print("       " + line)
+    print()
+    print("       " + connection_setup_hint())
+    sys.exit(EXIT_CONNECT)
+
+
+# --------------------------------------------------------------------------
+# connection-first gate: the `radeon-cloud` ssh alias must exist before use
+# --------------------------------------------------------------------------
+
+CONNECTION_GUIDE_URL = "https://mp.weixin.qq.com/s/dOAIzJ2qsWPmBSH67q41aA"
+CONNECTION_GUIDE_TITLE = "\u5728 Windows \u6216 MacBook \u4e0a\u8fde\u63a5 Radeon Cloud"
+
+
+def connection_setup_hint() -> str:
+    """One short, can't-miss pointer shown whenever connection is the blocker.
+
+    The user's endpoint is their own leased Radeon Cloud box - it is
+    intentionally NEVER hard-coded anywhere in this skill. The CLI only ever
+    talks to the `radeon-cloud` ssh alias resolved from ~/.ssh/config, and when
+    that alias is missing (or `ssh radeon-cloud` itself fails) this is the first
+    thing we surface, so a cold start never ends in raw ssh errors.
+    """
+    return (
+        "If ssh radeon-cloud fails or there is no radeon-cloud alias, "
+        "complete the connection setup first: "
+        f"{CONNECTION_GUIDE_TITLE} ({CONNECTION_GUIDE_URL})"
+    )
+
+
+def require_ssh_alias(cfg: dict, what: str) -> None:
+    """The skill's mandatory first step: the `radeon-cloud` ssh alias must exist.
+
+    A new user's very first action is to connect their cloud instance; nothing in
+    the skill works until the alias is present in ~/.ssh/config. We never hard-code
+    an IP:port - we only look for the alias and, if it is absent, point the user at
+    the connection setup guide instead of failing obscurely. A raw hostname/IP set
+    in config.yaml bypasses this (advanced self-hosting), but the default host is
+    the alias and that is what every normal user gets.
+    """
+    host = cfg["host"]
+    if ssh_alias_defined(host) or _looks_like_raw_hostname(host):
+        return
+    sshcfg = Path.home() / ".ssh" / "config"
+    fail(f"the `{what}` command needs the `{host}` ssh alias, but it is not configured in {sshcfg}")
+    print()
+    print("       " + connection_setup_hint())
+    print()
+    info("Add the `radeon-cloud` Host block from your provider console, then re-run:  rc doctor")
     sys.exit(EXIT_CONNECT)
 
 
@@ -754,6 +807,7 @@ def cmd_doctor(args, cfg) -> int:
         info("Nothing downstream can succeed until the endpoint is configured.")
         for line in diagnose_ssh_failure(cfg, 255, "", "").splitlines():
             print("       " + line)
+        print("       " + connection_setup_hint())
         return 1
 
     if not target:
@@ -1551,12 +1605,9 @@ def cmd_guide(args, cfg) -> int:
     print(f"ssh alias : {host}      persistent volume: {ws}")
     print()
 
-    if not ssh_alias_defined(host) and not _looks_like_raw_hostname(host):
-        fail(f"step 0 is not done: {host!r} has no Host block in {Path.home() / '.ssh' / 'config'}")
-        print()
-        for line in diagnose_ssh_failure(cfg, 255, "", "").splitlines():
-            print("       " + line)
-        return EXIT_CONNECT
+    # Step 0 of every skill use is "connect radeon-cloud". If the alias is
+    # missing we point at the setup guide and stop here, before any remote work.
+    require_ssh_alias(cfg, "guide")
 
     rc, out, err = ssh_run(cfg, "echo __RC_ONLINE__", timeout=max(30, int(cfg.get("connect_timeout", 20)) + 15))
     if rc != 0 or "__RC_ONLINE__" not in out:

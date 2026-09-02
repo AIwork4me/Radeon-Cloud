@@ -7,7 +7,7 @@ Observed 2026-08-30/31 by direct probe. Re-verify with `rc doctor` and `rc env` 
 | Item | Value |
 |---|---|
 | ssh alias | `radeon-cloud` |
-| endpoint | `root@36.150.116.220:31622` |
+| endpoint | your own `radeon-cloud` ssh alias target (HostName + Port set in `~/.ssh/config`) - never hard-coded in this skill |
 | hostname | `u-18147-942e8579` |
 | OS | Ubuntu 24.04.4 LTS, kernel 6.8.0-79-generic |
 | CPU | 128 logical cores (AMD EPYC 9334 class) |

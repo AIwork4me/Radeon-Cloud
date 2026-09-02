@@ -81,7 +81,7 @@ torch environments
 | Severity | Item | Status |
 |---|---|---|
 | IMPORTANT | `rc status` raw `rocm-smi` dump buried headline numbers | **Fixed** in `515f9b7` (distilled to one line; `--raw` fallback) |
-| LOW (informational) | Public cloud IP:port `36.150.116.220:31622` appears in `references/environment.md` | **By design** — it is the user's own leased box and the value is the connection target a new user must configure. Not scrubbed; scrubbing would break first-time alias setup. No secret is exposed (key is referenced by path only, never shipped). |
+| RESOLVED | `references/environment.md` no longer hard-codes any public IP:port. The skill only ever references the `radeon-cloud` ssh alias; when the alias is missing or `ssh radeon-cloud` fails it points the user to the connection setup guide, and the endpoint is configured exclusively in the user's own `~/.ssh/config`. |
 
 No blocking or confusing friction remains for a new user.
 
