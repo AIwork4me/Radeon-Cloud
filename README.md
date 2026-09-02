@@ -32,6 +32,8 @@ RC="$HOME/.workbuddy-ai/skills/radeon-cloud-connector/scripts/rc.py"
 
 The SSH alias must be configured in `~/.ssh/config` with a current host, port, user, and private key. The connector never disables host-key checking. Host-key repair backs up `known_hosts`, displays fingerprints, requires confirmation, and changes only the exact target host and port.
 
+If `ssh radeon-cloud` fails, complete the connection setup first: [在 Windows 或 MacBook 上连接 Radeon Cloud](https://mp.weixin.qq.com/s/dOAIzJ2qsWPmBSH67q41aA).
+
 ## Safety model
 
 - Persistent remote data belongs under `/workspace` or the configured HuggingFace cache.
