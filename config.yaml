@@ -1,6 +1,11 @@
 name: radeon-cloud-connector
-version: 1.0.1
+version: 1.0.2
 description: Operate and diagnose an AMD Radeon Cloud GPU workstation over a safe SSH CLI.
+# Running commands on your box is the point of this skill, but it must never
+# happen behind your back. Interactive use prompts once before connecting.
+# Scripted use (CI, another agent, a pipe) is refused unless you set this to
+# true, or export RC_ALLOW_UNATTENDED=1 for the current shell.
+allow_unattended: false
 triggers:
   - radeon-cloud
   - Radeon cloud

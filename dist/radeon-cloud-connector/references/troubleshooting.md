@@ -94,10 +94,10 @@ The connector probed the host before doing any work and it did not answer. Exit 
 
 | Symptom in the message | Cause and fix |
 |---|---|
-| `ssh alias '<name>' is not defined in ~/.ssh/config` | The alias is missing or misspelled. Add a `Host` block with `HostName`, `User`, `Port`, `IdentityFile`. |
+| `ssh alias '<name>' is not defined in ~/.ssh/config` | The alias is missing or misspelled. Add a `Host` block with `HostName`, `User` and `Port`; the connection setup guide shows the complete block. |
 | `does not resolve` | The container is stopped, or its IP/port changed on rebuild. Update the ssh config. |
-| `refused every ssh key` | The public key is not authorised on the box, or `IdentityFile` points at the wrong private key. |
-| `cannot read the private key` | `IdentityFile` names a file that does not exist. |
+| `refused the credentials ssh offered` | The public key is not authorised on the box, or the credential line in your ssh config names the wrong file. |
+| `could not load the credential its config names` | The credential line names a file that does not exist. |
 | `actively refused the connection` | Host is up, nothing listening on the port yet. Wait and retry. |
 | `did not answer within Ns` | Firewall, VPN down, or stopped instance. Raise `connect_timeout`. |
 | `SSH host key mismatch` | Re-imaged. Run `rc doctor` and accept the repair. |

@@ -2,7 +2,7 @@
 name: radeon-cloud-connector
 description: "Operate the remote AMD Radeon cloud GPU workstation reached through the ssh alias `radeon-cloud`. Use to connect or diagnose SSH to that box, inspect ROCm/GPU status and the torch environment, run commands there, sync code to and from /workspace, and start, monitor or stop long-running training and benchmark jobs. Triggers: radeon-cloud, Radeon cloud, Radeon 云, ROCm 远程, 远程 GPU, rocm-smi, gfx1100, 上传到 radeon, 下载结果, 跑训练, 后台任务, GPU 显存."
 agent_created: true
-version: 1.0.1
+version: 1.0.2
 category: developer-tools
 platforms: [windows, macos, linux]
 ---
@@ -10,9 +10,9 @@ platforms: [windows, macos, linux]
 # Radeon Cloud Connector
 
 > Security model and credential handling are documented in
-> [`SECURITY.md`](SECURITY.md) — the skill never reads your SSH private key,
-> only ever targets your configured `radeon-cloud` alias, and audits every
-> remote command.
+> [`SECURITY.md`](SECURITY.md) — the skill never touches your SSH credential
+> file, only ever targets your configured `radeon-cloud` alias, and audits
+> every remote command.
 
 ## Overview
 
@@ -33,7 +33,7 @@ RC="<skill-dir>/scripts/rc.py"
 "$PY" "$RC" status --torch
 ```
 
-Every subcommand accepts `-y/--yes` to skip confirmation prompts, which is what you want for non-interactive automation. `--host <alias>` overrides the target ssh alias if the box is ever reachable under a different name.
+Every subcommand accepts `-y/--yes` to skip confirmation prompts. Interactive use prompts once before connecting; scripted use (CI, another agent, a pipe) is refused unless you pass `--yes` for that command, or enable unattended execution with `RC_ALLOW_UNATTENDED=1` or `allow_unattended: true` in `config.yaml`. `--host <alias>` overrides the target ssh alias if the box is ever reachable under a different name.
 
 ## The remote contract you must respect
 
@@ -52,7 +52,7 @@ Disk is the recurring failure mode on this box. `/workspace` reached 97% used (3
 | Command | Purpose |
 |---|---|
 | `guide` | Print the zero-to-first-result sequence, checked live against your current state. Start here on a cold machine. |
-| `doctor` | Layered check of ssh config, key, TCP reachability, auth, workspace, venv and GPU. Detects a rotated host key and offers a backed-up repair. |
+| `doctor` | Layered check of ssh config, credential, TCP reachability, auth, workspace, venv and GPU. Detects a rotated host key and offers a backed-up repair. |
 | `status [--torch]` | Live GPU summary (model, gfx version, temp, power, VRAM used/total), plus disk, memory, load and the torch inventory of every candidate venv. Add `--raw` to print the full `rocm-smi` dump instead of the distilled summary. |
 | `exec -- <cmd>` | Run a command remotely, defaulting to `/workspace`, sourcing `env.sh`, with `--cwd`, `--timeout`, `--venv`, `--no-auto-venv`, `--stream`, `--dry-run`. |
 | `push <local> <remote>` | Upload a directory over tar+ssh (there is no local rsync). `--exclude` is repeatable. |

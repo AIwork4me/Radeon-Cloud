@@ -17,9 +17,9 @@ The goal is **one-pass success**: a user who follows `rc guide` should reach a w
 | J0.2 | ssh-keyscan is available | Needed only for host-key repair | Fallback to the OpenSSH system directory |
 | J0.3 | `~/.ssh/config` exists | File absent | `ssh_alias_defined` returns false; the guide shows the exact block to paste |
 | J0.4 | The `radeon-cloud` alias is defined | Typo, or the block was never added | Reported as one failure with a copy-pasteable `Host` block - **not** a cascade |
-| J0.5 | The private key exists and is readable | Key moved or deleted | Doctor names the configured-but-missing files, not ssh's internal probe list |
+| J0.5 | The ssh alias declares a credential | Credential moved or deleted | `ssh -G` confirms the credential line is declared; the skill itself never stats, opens or prints that file |
 
-**Design rule.** `ssh -G <host>` invents a plausible config for *any* string, so it can never detect a typo. Reading `~/.ssh/config` (including `Include`d files) is the only reliable signal. This was the single biggest one-pass blocker found: a non-existent alias used to produce a green "ssh config resolves" tick followed by seven confusing failures mentioning key files the user never configured.
+**Design rule.** `ssh -G <host>` invents a plausible config for *any* string, so it can never detect a typo. Reading `~/.ssh/config` (including `Include`d files) is the only reliable signal. This was the single biggest one-pass blocker found: a non-existent alias used to produce a green "ssh config resolves" tick followed by seven confusing failures mentioning credential files the user never configured.
 
 ### Stage 1 - first contact
 

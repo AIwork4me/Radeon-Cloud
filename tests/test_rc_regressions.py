@@ -35,6 +35,9 @@ class RcRegressionTests(unittest.TestCase):
             no_env=False,
             venv=None,
             dry_run=False,
+            # This test intentionally exercises the post-launch metadata failure;
+            # opt into the CLI's explicit non-interactive execution gate.
+            yes=True,
         )
         cfg = dict(rc.DEFAULTS)
         ssh_calls = []
@@ -51,6 +54,20 @@ class RcRegressionTests(unittest.TestCase):
         self.assertEqual(result, rc.EXIT_FAIL)
         self.assertNotIn("job started", output.getvalue())
         self.assertIn("metadata could not be written", output.getvalue())
+
+    def test_noninteractive_remote_execution_is_denied_by_default(self):
+        cfg = dict(rc.DEFAULTS)
+        with patch.object(rc.sys.stdin, "isatty", return_value=False), patch.object(rc.sys.stdout, "isatty", return_value=False):
+            with self.assertRaises(SystemExit) as raised:
+                rc.require_exec_consent(cfg, "echo hello", assume_yes=False)
+        self.assertEqual(raised.exception.code, rc.EXIT_FAIL)
+
+    def test_host_override_must_match_configured_alias(self):
+        cfg = dict(rc.DEFAULTS)
+        with patch.object(rc, "load_config", return_value=cfg), patch.object(rc, "ssh_alias_defined", return_value=True):
+            with self.assertRaises(SystemExit) as raised:
+                rc.main(["--host", "another-alias", "guide"])
+        self.assertEqual(raised.exception.code, rc.EXIT_CONNECT)
 
     def test_safe_extract_supports_streaming_archives(self):
         with tempfile.TemporaryDirectory() as temp_dir:

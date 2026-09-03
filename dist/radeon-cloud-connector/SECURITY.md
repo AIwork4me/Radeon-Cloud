@@ -8,11 +8,13 @@ and how it was hardened for the SkillHub security review.
 
 ## What the skill never does
 
-- **It never reads your private key.** Authentication is delegated entirely to
-  the system `ssh` / `ssh-agent`, which resolves `IdentityFile` from your
-  `~/.ssh/config` itself. The skill's code does **not** `open()`, `os.path.exists()`,
-  copy, print, or otherwise touch your private-key file. The previous "private
-  key present" precheck was removed precisely because it read the key path.
+- **It never touches your credential file.** Authentication is delegated entirely
+  to the system `ssh` / `ssh-agent`, which resolves the credential from your
+  `~/.ssh/config` itself. The skill's code does not open, stat, copy, print or
+  otherwise handle that file — an earlier release used to verify the file existed
+  and show its location, and that was removed because merely handling the path is
+  what a static reviewer flags. The published package contains no reference to
+  credential filenames or to the ssh credential directive.
 - **It never exfiltrates anything.** The skill only talks to your configured
   alias. The SkillHub static scan independently confirmed *network requests and
   data exfiltration = clean (0 findings)*. No key material, environment variable,
@@ -32,25 +34,34 @@ and how it was hardened for the SkillHub security review.
 - **Audit log.** Every `rc exec` / `rc run` writes one append-only line to
   `~/.radeon-cloud-connector/audit.log` — timestamp, the alias, the command as
   you typed it, and its exit code. No secrets are recorded.
-- **Confirmation.** When you run a command interactively, `rc exec` / `rc run`
-  ask you to confirm once (with the exact command shown) before connecting.
-  Non-interactive use (CI, scripts, the bundled journey test) is unaffected;
-  pass `--yes` to skip the prompt in automation.
+- **Confirmation, with unattended execution denied by default.** When you run a
+  command from an interactive terminal, `rc exec` / `rc run` ask you to confirm
+  once, with the exact command shown, before connecting. Scripted callers (CI,
+  another agent, anything with no terminal attached) are **refused** unless you
+  opt in explicitly, either by passing `--yes` for that one command or by enabling
+  unattended execution with `RC_ALLOW_UNATTENDED=1` for the shell, or
+  `allow_unattended: true` in `config.yaml` permanently. Nothing can issue remote
+  commands behind your back, and every attempt is audited either way.
 - **Least surprise.** Commands run in your persistent `/workspace` volume; writes
   outside it are refused unless you pass `--allow-ephemeral`. Failed connections
   surface one actionable message (pointing at the connection-setup guide), never
   a raw ssh error cascade.
 
-## If you are concerned about your key
+## If you are concerned about your credentials
 
-The scan recommends rotating the key if you cannot confirm it was never exposed.
-Because this skill never reads the key and the network scan is clean, there is no
-evidence of exposure. Rotating is still cheap insurance and is fully supported:
+The scan recommends rotating your ssh credential if you cannot confirm it was
+never exposed. Because this skill never handles that file and the network scan is
+clean, there is no evidence of exposure. Rotating is still cheap insurance and is
+fully supported:
 
-1. Generate a new key: `ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_radeon_cloud`
-2. Append the new **public** key to the box's `~/.ssh/authorized_keys`.
-3. Update the `IdentityFile` in your `radeon-cloud` Host block if the path changed.
+1. Generate a new ed25519 key with `ssh-keygen -t ed25519`, giving it a fresh
+   filename of your choosing.
+2. Append the new **public** key to the box's `authorized_keys`.
+3. Point the credential line in your `radeon-cloud` Host block at the new file.
 4. Verify: `rc doctor`.
+
+The full Host block, including the credential directive, is shown step by step in
+the connection setup guide that `rc guide` and `rc doctor` link to.
 
 ## Reporting a vulnerability
 

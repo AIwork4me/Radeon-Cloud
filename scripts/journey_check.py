@@ -136,8 +136,13 @@ def run_rc(*args: str, host: str | None = None, timeout: int = 180,
     if host:
         cmd += ["--host", host]
     cmd += list(args)
+    # This harness drives rc non-interactively, which the CLI now refuses unless
+    # unattended execution is switched on. Opting in here keeps the live checks
+    # meaningful; the CLI's own default stays "deny" for everyone else.
+    child_env = dict(os.environ if env is None else env)
+    child_env.setdefault("RC_ALLOW_UNATTENDED", "1")
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout, env=child_env)
     except subprocess.TimeoutExpired:
         return 124, "", f"timed out after {timeout}s"
     return (
@@ -838,6 +843,20 @@ def phase_review(res: Results) -> None:
     res.check("R6.10", "rc.py never reads the user's private-key file (security-scan fix)",
               not collects_identity and not key_access and "ssh private key present" not in raw,
               "clean" if (not collects_identity and not key_access) else "key-access pattern found")
+
+    # R6.10 only proves rc.py is clean. The scanner reads every file in the
+    # directory that gets imported, so the whole published package has to be
+    # clean too - that is what publish_scan.py enforces, and running it here
+    # turns a dirty dist into a review failure instead of a rejected submission.
+    scan = subprocess.run(
+        [sys.executable, str(SKILL_DIR / "scripts" / "publish_scan.py"), "--quiet"],
+        capture_output=True,
+        timeout=120,
+    )
+    scan_detail = (scan.stdout.decode("utf-8", "replace").strip()
+                   or scan.stderr.decode("utf-8", "replace").strip())
+    res.check("R6.11", "published package passes the pre-publish credential scan",
+              scan.returncode == 0, scan_detail or "clean")
 
 
 # --------------------------------------------------------------------------

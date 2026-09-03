@@ -20,7 +20,7 @@ jobs:
       - name: Run regression tests
         run: python -m unittest discover -s tests -v
       - name: Compile Python sources
-        run: python -m py_compile scripts/rc.py scripts/journey_check.py scripts/install.py scripts/build_dist.py
+        run: python -m py_compile scripts/rc.py scripts/journey_check.py scripts/install.py scripts/build_dist.py scripts/publish_scan.py
       - name: Install the skill into an isolated test home
         env:
           HOME: ${{ runner.temp }}/workbuddy-home
@@ -34,6 +34,8 @@ jobs:
           HOME: ${{ runner.temp }}/workbuddy-home
         run: python scripts/install.py --check
       - name: Check dist directory synchronization (source <-> dist)
-        run: python scripts/install.py --check --dest dist/radeon-cloud-connector
+        run: python scripts/build_dist.py --check
       - name: Build and verify release ZIP
         run: python scripts/build_dist.py
+      - name: Pre-publish credential scan on the published package
+        run: python scripts/publish_scan.py
