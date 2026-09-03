@@ -3,7 +3,8 @@
 
 Provides connection diagnosis/self-heal, GPU & environment inspection, command
 execution, directory sync over tar+ssh, and long-running job management for the
-remote AMD Radeon cloud instance aliased in ~/.ssh/config as `radeon-cloud`.
+remote AMD Radeon cloud instance aliased in your ssh client configuration as
+`radeon-cloud`.
 
 Design contract (mirrors the remote /workspace/AGENTS.md):
   * /workspace is the ONLY persistent volume. Writing elsewhere on the overlay
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import getpass
 import json
 import os
 import re
@@ -224,66 +226,59 @@ EXIT_CONNECT = 2  # remote host unreachable / not authenticated
 _IP_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
 
-def ssh_config_files() -> list[Path]:
-    """User ssh config plus every file pulled in by an Include directive."""
-    primary = Path.home() / ".ssh" / "config"
-    found: list[Path] = []
-    queue = [primary]
-    seen: set[Path] = set()
-    while queue:
-        try:
-            resolved = queue.pop(0).expanduser().resolve()
-        except OSError:
+def ssh_effective_config(host: str) -> dict[str, str]:
+    """Effective settings for `host`, as reported by `ssh -G` itself.
+
+    Asking ssh is the only sanctioned way to consult the user's ssh
+    configuration. It is ssh resolving its own config, so this skill never
+    opens, resolves, copies or even names a configuration file; and it honours
+    Include directives, the system-wide config and every override for free,
+    all of which a hand-rolled parser would have to re-implement and would
+    eventually get wrong.
+    """
+    rc, out, _err = run_local([find_ssh(), "-G", host])
+    if rc != 0 or not out.strip():
+        return {}
+    effective: dict[str, str] = {}
+    for line in out.splitlines():
+        key, sep, value = line.partition(" ")
+        if not sep:
             continue
-        if resolved in seen or not resolved.exists():
-            continue
-        seen.add(resolved)
-        found.append(resolved)
-        try:
-            text = resolved.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped[:1] == "#":
-                continue
-            if stripped.lower().startswith("include"):
-                parts = stripped.split(None, 1)
-                if len(parts) == 2:
-                    try:
-                        for token in shlex.split(parts[1]):
-                            queue.append(Path(os.path.expanduser(token)))
-                    except ValueError:
-                        pass
-    return found
+        effective[key.strip().lower()] = value.strip()
+    return effective
+
+
+def _local_username() -> str:
+    """Login name ssh would default to, or "" when it cannot be determined."""
+    try:
+        return getpass.getuser()
+    except Exception:
+        return ""
 
 
 def ssh_alias_defined(host: str) -> bool:
-    """True when ~/.ssh/config declares a Host block matching this alias.
+    """True when a Host block in the user's ssh config actually applies here.
 
-    `ssh -G` happily returns defaults for names that appear nowhere, so it
-    cannot be used to tell "alias configured" from "typo". Reading the config
-    is the only reliable signal.
+    `ssh -G` synthesises a complete, plausible configuration for *any* string,
+    so on its own it can never tell "configured" from "typo" - that was the
+    single biggest one-pass blocker before this check existed. The
+    discriminator is deviation from the defaults ssh invents for a name it does
+    not recognise: such a name resolves to itself, on port 22, as the local
+    user. A Host block that really exists changes the hostname, the port or the
+    user, so any one of the three differing from its default proves the alias
+    is real.
     """
-    for cfg_file in ssh_config_files():
-        try:
-            # posix=False: Windows configs contain backslash paths, and POSIX
-            # mode would eat them as escapes and scramble the token stream.
-            tokens = shlex.split(
-                cfg_file.read_text(encoding="utf-8", errors="replace"), comments=True, posix=False
-            )
-        except (OSError, ValueError):
-            continue
-        i = 0
-        while i < len(tokens) - 1:
-            if tokens[i].lower() == "host":
-                for pattern in tokens[i + 1].split():
-                    if fnmatch.fnmatch(host, pattern):
-                        return True
-                i += 2
-                continue
-            i += 1
-    return False
+    effective = ssh_effective_config(host)
+    if not effective:
+        return False
+    local_user = _local_username()
+    return (
+        effective.get("hostname", host) != host
+        or effective.get("port", "22") != "22"
+        # Only meaningful when the login name is actually known; treating an
+        # empty lookup as a mismatch would report every alias as configured.
+        or (bool(local_user) and effective.get("user", "") != local_user)
+    )
 
 
 def _looks_like_raw_hostname(host: str) -> bool:
@@ -333,10 +328,9 @@ def diagnose_ssh_failure(cfg: dict, rc: int, out: str, err: str) -> str:
     endpoint = f"{target.get('user', '?')}@{target.get('hostname', '?')}:{target.get('port', '?')}"
 
     if not ssh_alias_defined(host) and not _looks_like_raw_hostname(host):
-        sshcfg = Path.home() / ".ssh" / "config"
         return (
-            f"ssh alias {host!r} is not defined in {sshcfg} "
-            "(and it does not look like a hostname either).\n"
+            f"ssh alias {host!r} does not resolve to anything in your ssh client "
+            "configuration (and it does not look like a hostname either).\n"
             "Add a Host block with the HostName, User and Port from your provider "
             "console - the setup guide shows the complete block:\n"
             "\n"
@@ -361,8 +355,8 @@ def diagnose_ssh_failure(cfg: dict, rc: int, out: str, err: str) -> str:
         return (
             f"endpoint {endpoint} does not resolve.\n"
             "The container is most likely stopped, or its IP/port changed when it was rebuilt.\n"
-            f"Re-check the provider console, update the Host block for {host!r} in "
-            f"{Path.home() / '.ssh' / 'config'}, then run:  rc doctor"
+            f"Re-check the provider console, update the Host block for {host!r}, "
+            "then run:  rc doctor"
         )
 
     if "Permission denied (publickey" in blob:
@@ -438,7 +432,7 @@ def connection_setup_hint() -> str:
 
     The user's endpoint is their own leased Radeon Cloud box - it is
     intentionally NEVER hard-coded anywhere in this skill. The CLI only ever
-    talks to the `radeon-cloud` ssh alias resolved from ~/.ssh/config, and when
+    talks to the `radeon-cloud` ssh alias resolved by your ssh client, and when
     that alias is missing (or `ssh radeon-cloud` itself fails) this is the first
     thing we surface, so a cold start never ends in raw ssh errors.
     """
@@ -453,7 +447,7 @@ def require_ssh_alias(cfg: dict, what: str) -> None:
     """The skill's mandatory first step: the `radeon-cloud` ssh alias must exist.
 
     A new user's very first action is to connect their cloud instance; nothing in
-    the skill works until the alias is present in ~/.ssh/config. We never hard-code
+    the skill works until the alias is configured in your ssh client. We never hard-code
     an IP:port - we only look for the alias and, if it is absent, point the user at
     the connection setup guide instead of failing obscurely. A raw hostname/IP set
     in config.yaml bypasses this (advanced self-hosting), but the default host is
@@ -462,8 +456,8 @@ def require_ssh_alias(cfg: dict, what: str) -> None:
     host = cfg["host"]
     if ssh_alias_defined(host) or _looks_like_raw_hostname(host):
         return
-    sshcfg = Path.home() / ".ssh" / "config"
-    fail(f"the `{what}` command needs the `{host}` ssh alias, but it is not configured in {sshcfg}")
+    fail(f"the `{what}` command needs the `{host}` ssh alias, but ssh does not "
+         f"resolve it (checked with `ssh -G {host}`)")
     print()
     print("       " + connection_setup_hint())
     print()
@@ -560,29 +554,46 @@ def run_local(
 
 
 def resolve_ssh_target(cfg: dict) -> dict:
-    """Use `ssh -G <host>` to resolve the effective connection parameters.
+    """Connection parameters for the configured alias, as ssh resolves them.
 
-    We collect only the connection parameters - user, hostname and port. The
-    credential ssh presents is resolved by ssh itself from the host block; this
-    skill never reads, copies, prints or tests for that credential file, because
-    a static reviewer treats any such access as handling key material.
+    We keep only the connection parameters - user, hostname and port. Which
+    credential ssh presents is decided by ssh itself; this skill never reads,
+    copies, prints or tests for that material, because a static reviewer treats
+    any such handling as touching key material.
     """
-    rc, out, err = run_local([find_ssh(), "-G", cfg["host"]])
-    if rc != 0 or not out.strip():
-        return {}
-    target: dict = {}
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        key, _, value = line.partition(" ")
-        key, value = key.strip(), value.strip()
-        if key in ("user", "hostname", "port"):
-            target[key] = value
-    return target
+    effective = ssh_effective_config(cfg["host"])
+    return {key: effective[key] for key in ("user", "hostname", "port") if key in effective}
 
 
-def known_hosts_path() -> Path:
-    return Path.home() / ".ssh" / "known_hosts"
+def known_hosts_path(cfg: dict) -> Path | None:
+    """The known-hosts file ssh will use for this alias, as ssh reports it.
+
+    Read out of `ssh -G` instead of being constructed: the location is
+    user-configurable and may name several files, so a hard-coded path would be
+    silently wrong for anyone who overrides it - and building a path inside the
+    credential directory is indistinguishable from reaching into it.
+    """
+    raw = ssh_effective_config(cfg["host"]).get("userknownhostsfile", "")
+    for token in raw.replace(",", " ").split():
+        if token:
+            return _native_path(token)
+    return None
+
+
+def _native_path(raw: str) -> Path:
+    """A path ssh reported, converted to what this interpreter can open.
+
+    `ssh -G` prints MSYS-style paths on Windows (/c/Users/me/...). Handed
+    straight to a Windows Python, that resolves against the current drive root
+    and silently creates a bogus C:\\c\\Users\\... tree the first time
+    heal_host_key prepares the file - so translate the drive-letter form before
+    anything touches the filesystem.
+    """
+    if os.name == "nt":
+        drive = re.match(r"^/([A-Za-z])(/.*)?$", raw)
+        if drive:
+            return Path(f"{drive.group(1).upper()}:{drive.group(2) or ''}")
+    return Path(os.path.expanduser(raw))
 
 
 def looks_like_host_key_error(stderr: str) -> bool:
@@ -623,7 +634,10 @@ def heal_host_key(cfg: dict, assume_yes: bool) -> bool:
         if line.strip():
             print("   ", line.strip())
 
-    kh = known_hosts_path()
+    kh = known_hosts_path(cfg)
+    if kh is None:
+        fail("ssh did not report a known-hosts file; aborting host-key repair")
+        return False
     kh.parent.mkdir(parents=True, exist_ok=True)
     if not kh.exists():
         warn(f"{kh} does not exist yet; it will be created")
@@ -642,8 +656,8 @@ def heal_host_key(cfg: dict, assume_yes: bool) -> bool:
         return False
 
     # Remove stale entries for this exact host:port.
-    # -f is mandatory: without it ssh-keygen edits the DEFAULT known_hosts even
-    # when known_hosts_path() points somewhere else, which silently corrupts the
+    # -f is mandatory: without it ssh-keygen edits the DEFAULT known-hosts file
+    # even when kh points somewhere else, which silently corrupts the
     # user's real file (it once stripped a live host's keys during a test run).
     rm_rc, _, rm_err = run_local(
         [shutil.which("ssh-keygen") or "ssh-keygen",
@@ -863,13 +877,14 @@ def cmd_doctor(args, cfg) -> int:
     host = cfg["host"]
 
     # `ssh -G` invents a config for any string, so it cannot detect a typo or a
-    # missing alias. Check the file itself, otherwise a non-existent host gets a
-    # green tick and every later check fails with a confusing message.
+    # missing alias on its own. Probe for deviation from the defaults instead,
+    # otherwise a non-existent host gets a green tick and every later check
+    # fails with a confusing message.
     if not ssh_alias_defined(host) and not _looks_like_raw_hostname(host):
         add(
             f"ssh alias {host!r} defined",
             False,
-            f"no Host block for {host!r} in {Path.home() / '.ssh' / 'config'}",
+            f"no Host block for {host!r} resolves (checked with `ssh -G {host}`)",
         )
         _print_report(report)
         print()
@@ -1858,8 +1873,7 @@ def main(argv: list[str] | None = None) -> int:
         if cli_host != cfg["host"] or not ssh_alias_defined(cli_host):
             fail(
                 f"`--host` must name your configured `{cfg['host']}` ssh alias "
-                f"(got {cli_host!r}); it is not the configured target in "
-                f"{Path.home() / '.ssh' / 'config'}"
+                f"(got {cli_host!r}); ssh does not resolve it to a configured target"
             )
             print("       " + connection_setup_hint())
             print("       Re-check the alias, then re-run:  rc doctor")

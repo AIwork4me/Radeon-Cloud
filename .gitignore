@@ -9,3 +9,4 @@ __pycache__/
 htmlcov/
 dist/radeon-cloud-connector.zip
 .workbuddy-ai/memory/
+.workbuddy/

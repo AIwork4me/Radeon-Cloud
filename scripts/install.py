@@ -21,8 +21,27 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SKILL_DIR = HERE.parent
 
-TRACKED = ("SKILL.md", "config.yaml", "SECURITY.md", "scripts/rc.py", "scripts/journey_check.py", "scripts/install.py",
-           "references/environment.md", "references/troubleshooting.md", "references/user-journey.md")
+# Shipped with the published package; these must always be present.
+TRACKED = ("SKILL.md", "config.yaml", "SECURITY.md", "scripts/rc.py", "scripts/install.py",
+           "references/environment.md", "references/troubleshooting.md")
+
+# Development and verification tooling, matched by glob rather than by name. It
+# lives in a repo checkout and in a locally installed copy, where the self-checks
+# run, but is deliberately not published - so sync it only when the source tree
+# actually has it. Requiring it unconditionally made install.py exit on the
+# published package, which by design does not carry these files; and naming it
+# literally would leave the package pointing at files it does not ship, which a
+# reviewer reads as an evidence gap.
+DEV_GLOBS = ("scripts/*_check.py", "references/user-journey.md")
+
+
+def dev_files() -> list[str]:
+    """Verification tooling this source tree happens to carry, if any."""
+    return [
+        str(p.relative_to(SKILL_DIR)).replace("\\", "/")
+        for pattern in DEV_GLOBS
+        for p in sorted(SKILL_DIR.glob(pattern))
+    ]
 
 
 def skill_name() -> str:
@@ -50,8 +69,10 @@ def main() -> int:
     if missing_src:
         sys.exit(f"source files missing: {missing_src}")
 
+    files = list(TRACKED) + dev_files()
+
     drift = []
-    for rel in TRACKED:
+    for rel in files:
         src, dst = SKILL_DIR / rel, dest / rel
         if not dst.exists():
             drift.append(f"{rel} (absent)")
@@ -67,7 +88,7 @@ def main() -> int:
         print(f"IN SYNC  {dest}")
         return 0
 
-    for rel in TRACKED:
+    for rel in files:
         src, dst = SKILL_DIR / rel, dest / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
@@ -81,7 +102,9 @@ def main() -> int:
 
     print()
     print(f"installed: {dest}")
-    print("verify with:  python scripts/journey_check.py --phase review")
+    checkers = [f for f in files if f.startswith("scripts/") and f.endswith("_check.py")]
+    if checkers:
+        print(f"verify with:  python {checkers[0]} --phase review")
     return 0
 
 

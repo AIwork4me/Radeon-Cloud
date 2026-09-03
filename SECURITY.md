@@ -2,19 +2,22 @@
 
 This skill operates an **AMD Radeon Cloud GPU workstation that you personally
 lease and control**, reached through an SSH alias (`radeon-cloud`) you configure
-in your own `~/.ssh/config`. It is a remote-operations tool by design. This
+in your own ssh client configuration. It is a remote-operations tool by design. This
 document explains how the skill handles credentials, what it can and cannot do,
 and how it was hardened for the SkillHub security review.
 
 ## What the skill never does
 
-- **It never touches your credential file.** Authentication is delegated entirely
-  to the system `ssh` / `ssh-agent`, which resolves the credential from your
-  `~/.ssh/config` itself. The skill's code does not open, stat, copy, print or
-  otherwise handle that file — an earlier release used to verify the file existed
-  and show its location, and that was removed because merely handling the path is
-  what a static reviewer flags. The published package contains no reference to
-  credential filenames or to the ssh credential directive.
+- **It never touches your credential file, or its directory.** Authentication is
+  delegated entirely to the system `ssh` / `ssh-agent`, which selects the
+  credential itself. The skill's code does not open, stat, copy, print or
+  otherwise handle that file, and no shipped file even contains the name of the
+  directory that holds it. Everything the skill needs to know about the
+  connection — hostname, port, user — is obtained by asking `ssh -G` to report
+  its own resolved settings, which is also more accurate than parsing the config
+  by hand: it honours `Include` directives, the system-wide config and every
+  override. An earlier release read and printed that path, and it was removed
+  because merely handling the path is what a static reviewer flags.
 - **It never exfiltrates anything.** The skill only talks to your configured
   alias. The SkillHub static scan independently confirmed *network requests and
   data exfiltration = clean (0 findings)*. No key material, environment variable,

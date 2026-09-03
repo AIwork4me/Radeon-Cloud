@@ -2,7 +2,7 @@
 name: radeon-cloud-connector
 description: "Operate the remote AMD Radeon cloud GPU workstation reached through the ssh alias `radeon-cloud`. Use to connect or diagnose SSH to that box, inspect ROCm/GPU status and the torch environment, run commands there, sync code to and from /workspace, and start, monitor or stop long-running training and benchmark jobs. Triggers: radeon-cloud, Radeon cloud, Radeon 云, ROCm 远程, 远程 GPU, rocm-smi, gfx1100, 上传到 radeon, 下载结果, 跑训练, 后台任务, GPU 显存."
 agent_created: true
-version: 1.0.2
+version: 1.0.3
 category: developer-tools
 platforms: [windows, macos, linux]
 ---
@@ -93,18 +93,12 @@ Do not "fix" `/workspace/env.sh` on the remote host on your own initiative. Its 
 
 ## Self-verification
 
-`scripts/journey_check.py` replays the entire new-user journey and reviews the package. Run it after any change to `rc.py` or to this file.
-
-```bash
-"$PY" "$RC" --help >/dev/null                        # sanity
-"$PY" <skill-dir>/scripts/journey_check.py --phase review    # static 360 review, ~5s, no network
-"$PY" <skill-dir>/scripts/journey_check.py --phase journey   # full live journey, ~2min
-```
-
-It creates and removes a remote scratch directory under `/workspace` and leaves nothing behind.
+After any change to `rc.py` or to this file, confirm the connector still
+diagnoses rather than guesses: a bare `rc doctor` on a machine where the alias
+is absent must print one actionable message and exit `2`, and `rc doctor` on a
+configured machine must reach the GPU check.
 
 ## References
 
 - `references/environment.md` — full machine profile, storage persistence rules, venv inventory, ROCm version strategy.
 - `references/troubleshooting.md` — known failures and their fixes, including host-key rotation and the no-torch venv.
-- `references/user-journey.md` — the zero-to-working journey map and the 360 degree review scheme.

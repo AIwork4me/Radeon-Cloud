@@ -10,7 +10,7 @@ Diagnose and repair in one step:
 "$PY" "$RC" doctor
 ```
 
-`doctor` detects the mismatch, runs `ssh-keyscan`, prints the freshly served fingerprints, backs up `~/.ssh/known_hosts` to a timestamped copy, then asks before trusting. Only the entries for the exact target host and port are removed, so sibling containers on the same IP but different ports keep their records.
+`doctor` detects the mismatch, runs `ssh-keyscan`, prints the freshly served fingerprints, backs up the known-hosts file ssh is using to a timestamped copy, then asks before trusting. Only the entries for the exact target host and port are removed, so sibling containers on the same IP but different ports keep their records.
 
 If you must act manually, the safe sequence is: back up `known_hosts`, run `ssh-keygen -R "[<ip>]:<port>"`, then append the output of `ssh-keyscan -p <port> -H <ip>`. Never disable `StrictHostKeyChecking` wholesale.
 
@@ -94,7 +94,7 @@ The connector probed the host before doing any work and it did not answer. Exit 
 
 | Symptom in the message | Cause and fix |
 |---|---|
-| `ssh alias '<name>' is not defined in ~/.ssh/config` | The alias is missing or misspelled. Add a `Host` block with `HostName`, `User` and `Port`; the connection setup guide shows the complete block. |
+| `ssh alias '<name>' does not resolve to anything in your ssh client configuration` | The alias is missing or misspelled, so `ssh -G` falls back to defaults. Add a `Host` block with `HostName`, `User` and `Port`; the connection setup guide shows the complete block. |
 | `does not resolve` | The container is stopped, or its IP/port changed on rebuild. Update the ssh config. |
 | `refused the credentials ssh offered` | The public key is not authorised on the box, or the credential line in your ssh config names the wrong file. |
 | `could not load the credential its config names` | The credential line names a file that does not exist. |
@@ -106,11 +106,11 @@ A remote command failing with exit `1` and a python traceback is **not** reporte
 
 ## Connector itself misbehaves
 
-Run the bundled verifier; it replays the whole user journey and reviews the package, and usually pinpoints the fault:
+The connector's own verdicts are the fastest starting point — they are written to say what to run next:
 
 ```bash
-"$PY" <skill-dir>/scripts/journey_check.py --phase review
-"$PY" <skill-dir>/scripts/journey_check.py --phase journey
+"$PY" "$RC" doctor
+"$PY" "$RC" status --torch
 ```
 
 Reset local config to defaults:

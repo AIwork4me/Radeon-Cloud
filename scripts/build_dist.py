@@ -42,7 +42,9 @@ TRACKED = (
 # installed copy, where the self-checks run) but is deliberately NOT published:
 # journey_check.py asserts that rc.py contains no private-key access, so its own
 # source necessarily carries those very patterns and would trip a static scan.
-DEV_ONLY = ("scripts/journey_check.py",)
+# user-journey.md is the design document behind that script, so shipping either
+# one leaves the reviewer pointed at a file it cannot see.
+DEV_ONLY = ("scripts/journey_check.py", "references/user-journey.md")
 
 
 def sync_dist() -> None:
