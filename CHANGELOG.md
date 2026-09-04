@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.4 - 2026-09-04
+
+Three fixes from the end-to-end UX test run (24 cases across the full install-to-cleanup journey; report in the workspace root, design in `docs/plans/2026-09-04-radeon-cloud-e2e-test-design.md`). Machine-health issues found by the same run (loadavg ~103 from D-state buildup) are environment factors and deliberately not "fixed" here - but the CLI now interprets them instead of printing a bare number.
+
+- **Command-string path guard (P1).** `exec -- touch /tmp/x` sailed past the persistence guard because `check_remote_path()` only inspected `--cwd` and push/pull destinations; the file really did land in the ephemeral `/tmp`. `exec` and `run` now scan the command text for paths under write-prone zones (`/tmp`, `/var/tmp`, `/dev/shm`, `/run`, `/root`, `/home`, `/mnt`, `/media`, `/srv`) and refuse before any connection is made, with the same `--allow-ephemeral` escape hatch. The scan is a denylist on purpose: reads of `/etc`, `/usr`, `/proc` and toolchain paths under `/opt` stay untouched, and URLs (`https://...`) are stripped before matching. SKILL.md's "refuses any path outside /workspace" claim is now accurate instead of overstated.
+- **Load is now interpreted, not just printed (P2).** `doctor` reported all-checks-passed while `status` printed a bare `loadavg 102.63`; the user had no way to tell saturation from a problem. `doctor` gains an advisory `system load` check and `status` annotates the line: load far above the number of running tasks reads as blocked (D-state) process buildup - the exact rocminfo-wedge signature this box had - and plain >2x-core saturation warns separately. Both are warnings, never hard failures: a busy training run must not scare anyone.
+- **MSYS virtual mounts rejected with guidance (P2).** Git Bash `/tmp/...` is a virtual mount that `_native_path()` translated into a nonexistent `C:\tmp\...`, failing with a confusing "local path does not exist". `push` and `pull` now detect such paths up front and say exactly what to use instead (`/c/...` drive-letter form or a Windows-native path).
+- Added the corresponding regression tests (command scan positives/negatives, load parsing and verdict, MSYS detection, push/pull refusal before connecting); unittest suite now 16/16.
+
 ## 1.0.3 - 2026-09-03
 
 Third SkillHub review round. Health score 29, one finding: "pattern for accessing the SSH private-key file" (static engine, file operations and sensitive-path access), plus an evidence gap for a script referenced but not shipped.

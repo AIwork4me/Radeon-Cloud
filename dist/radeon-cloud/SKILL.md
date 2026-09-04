@@ -2,7 +2,7 @@
 name: radeon-cloud
 description: "Operate the AMD Radeon Cloud GPU workstation AMD provides to you for free - one remote Ubuntu box with a 48 GB VRAM gfx1100 GPU, reached through the `radeon-cloud` SSH alias configured on this machine. Prerequisite: register for AMD Radeon Cloud (claim the free GPU time) and set up the ssh alias with the official setup guide before first use. Diagnose and self-heal SSH connection and rotated host keys, inspect ROCm and GPU status via rocm-smi, discover which Python venvs carry torch, run commands remotely, sync code and results between your machine and the box, and manage detached long-running jobs with logs. Start with `rc guide`. Triggers: radeon-cloud, Radeon cloud, Radeon 云, ROCm 远程, 远程 GPU, rocm-smi, gfx1100, 上传到 radeon, 下载结果, 跑训练, 后台任务, GPU 显存."
 agent_created: true
-version: 1.0.3
+version: 1.0.4
 category: developer-tools
 platforms: [windows, macos, linux]
 ---
@@ -50,7 +50,7 @@ Every subcommand accepts `-y/--yes` to skip confirmation prompts. Interactive us
 
 ## The remote contract you must respect
 
-`/workspace` is the only persistent volume. Anything written to `/`, `/tmp`, `/dev/shm` or `/run` is destroyed the next time the image is rebuilt, and this instance has already been rebuilt at least once. The CLI enforces this: `exec`, `push`, `pull` and `run` refuse any path outside `/workspace` (and the HuggingFace cache) unless you pass `--allow-ephemeral`.
+`/workspace` is the only persistent volume. Anything written to `/`, `/tmp`, `/dev/shm` or `/run` is destroyed the next time the image is rebuilt, and this instance has already been rebuilt at least once. The CLI enforces this at three levels: `push`/`pull` check their destination, `exec` and `run` check `--cwd`, and `exec`/`run` also scan the command string itself for paths under write-prone ephemeral zones (`/tmp`, `/var/tmp`, `/dev/shm`, `/run`, `/root`, `/home`, `/mnt`, `/media`, `/srv`) — a hit is refused with the same escape hatch. The command-string scan is a denylist on purpose: reads of system paths (`/etc`, `/usr`, `/proc`) and toolchain locations (`/opt`) are not blocked. All three refusals are waived by `--allow-ephemeral`.
 
 `/workspace/env.sh` sets `PATH`, `HF_HOME` and `HSA_OVERRIDE_GFX_VERSION`, and the CLI sources it before every command. It is shared with the user's other projects and they edit it, so treat it as a moving target rather than a fixed fact: as of 2026-09-01 it points `PATH` at `/workspace/venv`, which carries the standard stack (torch 2.12.0+rocm7.14.0). Earlier it pointed at a venv with no torch at all. Run `rc env` to see the current truth.
 
@@ -65,8 +65,8 @@ Disk is the recurring failure mode on this box. `/workspace` reached 97% used (3
 | Command | Purpose |
 |---|---|
 | `guide` | Print the zero-to-first-result sequence, checked live against your current state. Start here on a cold machine. |
-| `doctor` | Layered check of ssh config, credential, TCP reachability, auth, workspace, venv and GPU. Detects a rotated host key and offers a backed-up repair. |
-| `status [--torch]` | Live GPU summary (model, gfx version, temp, power, VRAM used/total), plus disk, memory, load and the torch inventory of every candidate venv. Add `--raw` to print the full `rocm-smi` dump instead of the distilled summary. |
+| `doctor` | Layered check of ssh config, credential, TCP reachability, auth, workspace, venv, load and GPU. Detects a rotated host key and offers a backed-up repair. |
+| `status [--torch]` | Live GPU summary (model, gfx version, temp, power, VRAM used/total), plus disk, memory, load (annotated when it indicates D-state buildup or saturation) and the torch inventory of every candidate venv. Add `--raw` to print the full `rocm-smi` dump instead of the distilled summary. |
 | `exec -- <cmd>` | Run a command remotely, defaulting to `/workspace`, sourcing `env.sh`, with `--cwd`, `--timeout`, `--venv`, `--no-auto-venv`, `--stream`, `--dry-run`. |
 | `push <local> <remote>` | Upload a directory over tar+ssh (there is no local rsync). `--exclude` is repeatable. |
 | `pull <remote> <local>` | Download a remote directory. Refuses to clobber an existing local path unless `--overwrite`. |
@@ -124,7 +124,7 @@ Rules that follow from this:
 
 If commands start hanging and load is inexplicably high, check for leaked probes: `ssh radeon-cloud "ps -eo pid,etimes,stat,args | grep -E 'device_count|is_available' | grep -v grep"`. `D`-state processes survive even SIGKILL; only a container restart clears them.
 
-On Windows/Git Bash, `$(pwd)` produces MSYS-style paths (`/c/Users/...`). `rc push` and `rc pull` translate these via `_native_path()`; hand them to nothing else without converting.
+On Windows/Git Bash, `$(pwd)` produces MSYS-style paths (`/c/Users/...`). `rc push` and `rc pull` translate these via `_native_path()`; hand them to nothing else without converting. Git Bash virtual mounts (`/tmp`, `/usr`, ...) do NOT map to Windows paths — push/pull reject them up front and say so; use the `/c/...` drive-letter form instead.
 
 ## Self-verification
 
@@ -142,6 +142,12 @@ diagnoses rather than guesses:
 5. `rc env` must never print a green OK for a venv it did not actually
    verify; when the probe fails, the resolved-environment section says so
    instead of silently disappearing.
+6. The command-string path scan must refuse ephemeral-zone paths
+   (`touch /tmp/x`) in `exec` and `run` before any connection is made,
+   must never block reads of system paths (`/etc`, `/usr`, `/proc`), and
+   must be waived by `--allow-ephemeral`. Load reporting must annotate
+   (warn) rather than fail: `loadavg 103 with 8 running tasks` reads as
+   D-state buildup, not as a hard error.
 
 ## References
 

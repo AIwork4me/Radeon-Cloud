@@ -596,6 +596,25 @@ def _native_path(raw: str) -> Path:
     return Path(os.path.expanduser(raw))
 
 
+def _msys_virtual_path(raw: str) -> bool:
+    """True for POSIX-style paths this Windows interpreter cannot resolve.
+
+    Git Bash exposes virtual mounts (/tmp, /usr, ...) that live inside the
+    MSYS installation; only drive-letter mounts (/c/...) map to real Windows
+    paths. A bare POSIX absolute path would otherwise be resolved against the
+    current drive root into a bogus C:\\tmp\\... tree and fail later with a
+    confusing "local path does not exist" error (found in the 2026-09-04 e2e
+    UX test). Meaningful on Windows only.
+    """
+    if os.name != "nt":
+        return False
+    if raw.startswith("~"):
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", raw):
+        return False
+    return bool(re.match(r"^/(?!([A-Za-z])(/|$))", raw))
+
+
 def looks_like_host_key_error(stderr: str) -> bool:
     return (
         "REMOTE HOST IDENTIFICATION HAS CHANGED" in stderr
@@ -735,9 +754,118 @@ def check_remote_path(path: str, cfg: dict, allow_ephemeral: bool) -> tuple[bool
     )
 
 
+# Write-prone remote zones whose contents do not survive an image rebuild.
+# The command-string scan below is a denylist on purpose: it catches the paths
+# a user actually writes to and silently loses, while never blocking reads of
+# system paths (/etc, /usr, /proc) or toolchain locations (/opt) - a false
+# block on `cat /etc/hosts` would be worse than the bug it fixes.
+EPHEMERAL_ZONES = (
+    "/tmp", "/var/tmp", "/dev/shm", "/run", "/root", "/home",
+    "/mnt", "/media", "/srv",
+)
+
+_ABS_PATH_RE = re.compile(r"(?<![\w.\-+])/(?:[A-Za-z0-9_.\-]+/)*[A-Za-z0-9_.\-]*")
+
+
+def check_command_paths(payload: str, cfg: dict, allow_ephemeral: bool) -> str | None:
+    """Guard for absolute paths embedded inside an `exec`/`run` command string.
+
+    `check_remote_path()` covers --cwd and the push/pull destinations, but
+    `rc exec -- touch /tmp/x` smuggles its target inside the command text and
+    used to sail straight through to the box (found in the 2026-09-04 e2e UX
+    test: the file really did land in /tmp). This scan flags paths under
+    zones that are known to be wiped on rebuild so silent data loss becomes a
+    visible refusal with the same --allow-ephemeral escape hatch.
+    """
+    if allow_ephemeral:
+        return None
+    workspace = cfg["workspace"].rstrip("/")
+    # Drop URLs first: https://host/a/b must not read as an absolute path.
+    scanned = re.sub(r"[A-Za-z][A-Za-z0-9+.\-]*://\S+", " ", payload)
+    hits: list[str] = []
+    for m in _ABS_PATH_RE.finditer(scanned):
+        p = m.group(0).rstrip("/")
+        if not p:
+            continue
+        for zone in EPHEMERAL_ZONES:
+            if p == zone or p.startswith(zone + "/"):
+                if p not in hits:
+                    hits.append(p)
+                break
+    if not hits:
+        return None
+    shown = ", ".join(hits[:4]) + (" ..." if len(hits) > 4 else "")
+    return (
+        f"{shown} in the command is outside the persistent volume {workspace}. "
+        "Data written there is lost when the image is rebuilt. Re-run with "
+        "--allow-ephemeral if this is intentional."
+    )
+
+
 # --------------------------------------------------------------------------
 # remote probes
 # --------------------------------------------------------------------------
+
+
+def parse_loadavg(out: str) -> tuple[int | None, float | None, int | None, str]:
+    """Parse the combined `nproc; cat /proc/loadavg` probe output.
+
+    Returns (cores, 1-minute loadavg, currently running entities, raw loadavg
+    line). Tolerates the legacy one-line form (nproc missing) and empty
+    output, because a probe that half-fails must degrade to "unknown", never
+    to a wrong number.
+    """
+    lines = [l for l in out.strip().splitlines() if l.strip()]
+    if not lines:
+        return None, None, None, ""
+    cores: int | None = None
+    avg_line = lines[0]
+    if len(lines) > 1 and lines[0].strip().isdigit():
+        cores = int(lines[0])
+        avg_line = lines[1]
+    fields = avg_line.split()
+    load1: float | None = None
+    running: int | None = None
+    try:
+        load1 = float(fields[0])
+    except (ValueError, IndexError):
+        pass
+    if len(fields) >= 4 and "/" in fields[3]:
+        head = fields[3].split("/", 1)[0]
+        if head.isdigit():
+            running = int(head)
+    return cores, load1, running, avg_line.strip()
+
+
+def load_verdict(cores: int | None, load1: float | None,
+                 running: int | None = None) -> tuple[str, str]:
+    """Interpret a 1-minute loadavg; returns (level, detail), level ok|warn.
+
+    Two independent signals, both advisory - a busy training run is normal
+    and must not scare the user:
+    - the 2026-09-04 signature: loadavg far above the number of RUNNING
+      tasks means blocked (D-state) process buildup, the rocminfo-wedge
+      failure this box actually had;
+    - plain saturation: load above 2x cores with no breakdown available.
+    """
+    if load1 is None:
+        return "ok", "load unknown"
+    if running is not None and load1 > running + 20:
+        return "warn", (
+            f"load {load1:.1f} with only {running} running task(s) - blocked "
+            "(D-state) process buildup likely (see references/troubleshooting.md)"
+        )
+    if cores and cores > 0 and load1 > 2 * cores:
+        return "warn", (
+            f"load {load1:.1f} is above 2x the {cores}-core count "
+            "(see references/troubleshooting.md)"
+        )
+    detail = f"load {load1:.1f}"
+    if cores:
+        detail += f" on {cores} cores"
+    if running is not None:
+        detail += f", {running} running"
+    return "ok", detail
 
 
 # Bound each venv's probe on the REMOTE side. `torch.cuda.device_count()` (and
@@ -1012,6 +1140,15 @@ def cmd_doctor(args, cfg) -> int:
                 "warn",
             )
 
+    # Load is advisory: a saturated box is not a broken connection, but the
+    # D-state buildup signature previously sailed through as "all checks
+    # passed" while every remote command crawled. Warn, never fail.
+    load_out = remote_capture(cfg, "nproc 2>/dev/null; cat /proc/loadavg", timeout=30)
+    if load_out:
+        cores, load1, running, _ = parse_loadavg(load_out)
+        level, detail = load_verdict(cores, load1, running)
+        add("system load", level == "ok", detail, "warn")
+
     env_rc, env_out, _ = ssh_run(
         cfg, f"test -f {shlex.quote(env_file)} && echo YES || echo NO", timeout=30
     )
@@ -1161,7 +1298,7 @@ def cmd_status(args, cfg) -> int:
     )
     disk = remote_capture(cfg, f"df -P -B1 {shlex.quote(cfg['workspace'])} / | tail -2", timeout=30)
     mem = remote_capture(cfg, "free -b | head -2 | tail -1", timeout=30)
-    load = remote_capture(cfg, "cat /proc/loadavg", timeout=30)
+    load = remote_capture(cfg, "nproc 2>/dev/null; cat /proc/loadavg", timeout=30)
 
     print("=" * 72)
     print(f"radeon-cloud status   (host alias: {cfg['host']})")
@@ -1199,8 +1336,15 @@ def cmd_status(args, cfg) -> int:
             print(f"memory  {int(f[1])/g:8.1f} GiB total / {int(f[2])/g:8.1f} GiB used")
 
     if load:
+        cores, load1, running, avg_line = parse_loadavg(load)
         print()
-        print(f"loadavg {load.strip()}")
+        print(f"loadavg {avg_line}" if avg_line else "loadavg (probe failed)")
+        if avg_line:
+            level, detail = load_verdict(cores, load1, running)
+            if level == "warn":
+                # A bare load number invites the user to guess whether 103 on
+                # this box is normal; say it instead.
+                print(f"   WARNING: {detail}")
 
     if args.torch:
         venv_state = ensure_venv_cache(cfg, force=True)
@@ -1240,6 +1384,9 @@ def cmd_exec(args, cfg) -> int:
     payload = build_payload(args.command)
     if not payload.strip():
         die("no command given (usage: rc exec -- <command> [args...])")
+    cmd_note = check_command_paths(payload, cfg, args.allow_ephemeral)
+    if cmd_note:
+        die(cmd_note)
     timeout = args.timeout or cfg.get("command_timeout") or None
 
     if args.dry_run:
@@ -1308,6 +1455,11 @@ def _dir_size(path: Path) -> int:
 
 
 def cmd_push(args, cfg) -> int:
+    if _msys_virtual_path(args.local):
+        die(f"{args.local} is a Git Bash virtual mount that this interpreter cannot "
+            "resolve to a Windows path. Use the /c/... drive-letter form "
+            "(e.g. /c/Users/you/project) or a Windows-native path instead.",
+            EXIT_FAIL)
     # _native_path(), not a bare Path(): Git Bash reports `pwd` as /c/Users/...
     # and a Windows Python reads that as C:\c\Users\.... A `rc push "$(pwd)/x"`
     # then pushed the wrong tree, or died with a confusing "does not exist".
@@ -1412,6 +1564,11 @@ def safe_extract(tar: tarfile.TarFile, destination: Path) -> None:
 
 
 def cmd_pull(args, cfg) -> int:
+    if _msys_virtual_path(args.local):
+        die(f"{args.local} is a Git Bash virtual mount that this interpreter cannot "
+            "resolve to a Windows path. Use the /c/... drive-letter form "
+            "(e.g. /c/Users/you/results) or a Windows-native path instead.",
+            EXIT_FAIL)
     remote_dir = args.remote
     allowed, note = check_remote_path(remote_dir, cfg, args.allow_ephemeral)
     if not allowed:
@@ -1477,6 +1634,9 @@ def cmd_run(args, cfg) -> int:
     payload = build_payload(args.command)
     if not payload.strip():
         die("no command given (usage: rc run --name <slug> -- <command> [args...])")
+    cmd_note = check_command_paths(payload, cfg, args.allow_ephemeral)
+    if cmd_note:
+        die(cmd_note)
 
     log_path = f"{job_dir}/{job_id}.log"
     meta_path = f"{job_dir}/{job_id}.json"
