@@ -1,6 +1,6 @@
 ---
 name: radeon-cloud-connector
-description: "Operate the AMD Radeon Cloud GPU workstation AMD provides to you for free - one remote Ubuntu box with a 48 GB VRAM gfx1100 GPU, reached through the `radeon-cloud` SSH alias configured on this machine. Diagnose and self-heal SSH connection and rotated host keys, inspect ROCm and GPU status via rocm-smi, discover which Python venvs carry torch, run commands remotely, sync code and results between your machine and the box, and manage detached long-running jobs with logs. Start with `rc guide`. Triggers: radeon-cloud, Radeon cloud, Radeon 云, ROCm 远程, 远程 GPU, rocm-smi, gfx1100, 上传到 radeon, 下载结果, 跑训练, 后台任务, GPU 显存."
+description: "Operate the AMD Radeon Cloud GPU workstation AMD provides to you for free - one remote Ubuntu box with a 48 GB VRAM gfx1100 GPU, reached through the `radeon-cloud` SSH alias configured on this machine. Prerequisite: register for AMD Radeon Cloud (claim the free GPU time) and set up the ssh alias with the official setup guide before first use. Diagnose and self-heal SSH connection and rotated host keys, inspect ROCm and GPU status via rocm-smi, discover which Python venvs carry torch, run commands remotely, sync code and results between your machine and the box, and manage detached long-running jobs with logs. Start with `rc guide`. Triggers: radeon-cloud, Radeon cloud, Radeon 云, ROCm 远程, 远程 GPU, rocm-smi, gfx1100, 上传到 radeon, 下载结果, 跑训练, 后台任务, GPU 显存."
 agent_created: true
 version: 1.0.3
 category: developer-tools
@@ -19,6 +19,19 @@ platforms: [windows, macos, linux]
 `radeon-cloud` is a free-of-charge AMD Radeon Cloud instance: an Ubuntu 24.04 container with one AMD Navi 31 GPU (gfx1100, about 48 GB VRAM) and ROCm installed. This skill wraps it behind a single CLI, `scripts/rc.py`, which exists because five things on this box repeatedly go wrong and each one costs real time when handled by hand: the SSH host key rotates whenever the instance is re-imaged, `/workspace/env.sh` puts a venv without torch first on `PATH`, the container overlay silently discards anything written outside `/workspace`, long jobs die when the local terminal goes away, and a broken endpoint otherwise looks like a working one.
 
 Prefer the CLI over hand-rolled `ssh` one-liners. It sources the environment, applies the persistence guard, handles host-key rotation and tracks job state.
+
+## Before you start (prerequisite)
+
+This skill operates an existing machine - it cannot register one for you. **Before first use, complete AMD Radeon Cloud onboarding with the official setup guide:**
+
+**[在 Windows 或 MacBook 上连接 Radeon Cloud](https://mp.weixin.qq.com/s/dOAIzJ2qsWPmBSH67q41aA)**
+
+The guide walks you through:
+
+1. **注册 AMD Radeon Cloud 并领取免费 GPU 时长**（register and claim the free GPU hours）- the workstation costs nothing to use, but you must have an account with claimed time before anything here can connect;
+2. **配置 `radeon-cloud` ssh 别名**（configure the `radeon-cloud` SSH alias with host, port, user and key - the guide shows the exact block）- every command in this skill targets that alias and nothing else.
+
+If any `rc` command reports exit code `2` (connection problem), come back to this guide - it is almost always a missing or stale alias.
 
 ## Invocation
 

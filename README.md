@@ -21,6 +21,8 @@ The installer synchronizes the source files and removes generated `__pycache__` 
 
 ## First use
 
+**Prerequisite: register for AMD Radeon Cloud and claim your free GPU hours before using this skill.** The workstation is provided by AMD free of charge, but an account with claimed GPU time is required. Follow the official guide — it also walks through the SSH alias setup: [在 Windows 或 MacBook 上连接 Radeon Cloud](https://mp.weixin.qq.com/s/dOAIzJ2qsWPmBSH67q41aA).
+
 ```bash
 PY="${HOME}/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe"
 RC="$HOME/.workbuddy-ai/skills/radeon-cloud-connector/scripts/rc.py"
@@ -32,7 +34,7 @@ RC="$HOME/.workbuddy-ai/skills/radeon-cloud-connector/scripts/rc.py"
 
 The SSH alias must be configured in `~/.ssh/config` with a current host, port, user, and private key. The connector never disables host-key checking. Host-key repair backs up `known_hosts`, displays fingerprints, requires confirmation, and changes only the exact target host and port.
 
-If `ssh radeon-cloud` fails, complete the connection setup first: [在 Windows 或 MacBook 上连接 Radeon Cloud](https://mp.weixin.qq.com/s/dOAIzJ2qsWPmBSH67q41aA).
+If `ssh radeon-cloud` still fails after registration and alias setup, re-run the connection setup guide: [在 Windows 或 MacBook 上连接 Radeon Cloud](https://mp.weixin.qq.com/s/dOAIzJ2qsWPmBSH67q41aA).
 
 ## Safety model
 

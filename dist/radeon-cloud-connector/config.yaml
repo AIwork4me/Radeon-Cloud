@@ -1,6 +1,6 @@
 name: radeon-cloud-connector
 version: 1.0.2
-description: Operate the free AMD Radeon Cloud GPU workstation (48 GB VRAM gfx1100, one box via your radeon-cloud SSH alias) over a safe SSH CLI.
+description: Operate the free AMD Radeon Cloud GPU workstation (48 GB VRAM gfx1100, one box via your radeon-cloud SSH alias) over a safe SSH CLI. Register and claim free GPU hours via the official setup guide before first use.
 # Running commands on your box is the point of this skill, but it must never
 # happen behind your back. Interactive use prompts once before connecting.
 # Scripted use (CI, another agent, a pipe) is refused unless you set this to
