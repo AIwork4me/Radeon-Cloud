@@ -1,6 +1,6 @@
 name: radeon-cloud-connector
 version: 1.0.2
-description: Operate and diagnose an AMD Radeon Cloud GPU workstation over a safe SSH CLI.
+description: Operate your own rented AMD Radeon Cloud GPU workstation (one box via your radeon-cloud SSH alias, not an AMD cloud service) over a safe SSH CLI.
 # Running commands on your box is the point of this skill, but it must never
 # happen behind your back. Interactive use prompts once before connecting.
 # Scripted use (CI, another agent, a pipe) is refused unless you set this to
