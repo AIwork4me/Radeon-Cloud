@@ -88,6 +88,25 @@ If another job you own is holding VRAM, stop it with `rc stop <job-id>`. Do not 
 rocm-smi --showproductname | grep -oE 'GPU\[[0-9]+\]' | sort -u | wc -l
 ```
 
+## A command hangs forever, and load creeps up
+
+`rocminfo` on this box can wedge in uninterruptible sleep (`D` state) and never return. Every HIP-initialising call shells out to it, so these all hang the same way: `rocminfo`, `torch.cuda.is_available()`, `torch.cuda.device_count()`. `rocm-smi`, `import torch` and `torch.version.hip` are safe.
+
+Diagnose:
+
+```bash
+ssh radeon-cloud "ps -eo pid,etimes,stat,args | grep -E 'device_count|is_available|rocminfo' | grep -v grep"
+ssh radeon-cloud "cat /proc/loadavg"
+```
+
+A pile of long-lived `D`-state processes matching one of those probe commands means the leak happened: a probe was bounded only by a local timeout, which kills the local ssh client and orphans the remote process. `D`-state processes survive SIGKILL — only a container restart clears them.
+
+Prevention: never probe the GPU with `torch.cuda.is_available()` / `device_count()`, and bound every remote probe on the far side with `timeout -s KILL <n> <cmd>` (the local subprocess timeout alone cannot do this job).
+
+## An unexpected exit code
+
+Exit `0` is success, `2` is a connection/authentication problem, `1` is a real failure of the command — with two exceptions. `exec` and `run` return the remote command's own exit code (`rc exec -- bash -c 'exit 3'` returns `3`; only `2` stays reserved), and `doctor` against a host that cannot be reached exits `2`, not `1`. Test scripted calls with `[ $? -ne 0 ]` unless you specifically care which failure it was.
+
 ## `cannot reach the remote workstation` / exit code 2
 
 The connector probed the host before doing any work and it did not answer. Exit code `2` means a connection or authentication problem, as opposed to `1` for a real failure of the command itself. The message that follows is specific to the cause and names the next step:
@@ -119,4 +138,4 @@ Reset local config to defaults:
 "$PY" "$RC" config --reset
 ```
 
-Config lives at `~/.radeon-cloud-connector/config.json`. Point the connector at a different ssh alias with `--host <alias>` or `rc config --set host=<alias>`.
+Config lives at `~/.radeon-cloud-connector/config.json`. `--host <alias>` is a whitelist, not a general override: it only accepts the already-configured `radeon-cloud` alias and rejects every other value with exit `2`, so the skill can never be pointed at a different machine by mistake.

@@ -33,7 +33,7 @@ RC="<skill-dir>/scripts/rc.py"
 "$PY" "$RC" status --torch
 ```
 
-Every subcommand accepts `-y/--yes` to skip confirmation prompts. Interactive use prompts once before connecting; scripted use (CI, another agent, a pipe) is refused unless you pass `--yes` for that command, or enable unattended execution with `RC_ALLOW_UNATTENDED=1` or `allow_unattended: true` in `config.yaml`. `--host <alias>` overrides the target ssh alias if the box is ever reachable under a different name.
+Every subcommand accepts `-y/--yes` to skip confirmation prompts. Interactive use prompts once before connecting; scripted use (CI, another agent, a pipe) is refused unless you pass `--yes` for that command, or enable unattended execution with `RC_ALLOW_UNATTENDED=1` or `allow_unattended: true` in `config.yaml`. `--host <alias>` is a whitelist, not a general override: it only accepts the already-configured `radeon-cloud` alias and rejects every other value with exit `2`. That is deliberate — it stops the skill from being used as a proxy to point commands at someone else's machine.
 
 ## The remote contract you must respect
 
@@ -41,7 +41,7 @@ Every subcommand accepts `-y/--yes` to skip confirmation prompts. Interactive us
 
 `/workspace/env.sh` sets `PATH`, `HF_HOME` and `HSA_OVERRIDE_GFX_VERSION`, and the CLI sources it before every command. It is shared with the user's other projects and they edit it, so treat it as a moving target rather than a fixed fact: as of 2026-09-01 it points `PATH` at `/workspace/venv`, which carries the standard stack (torch 2.12.0+rocm7.14.0). Earlier it pointed at a venv with no torch at all. Run `rc env` to see the current truth.
 
-The CLI defends against both states: when `env.sh`'s default venv cannot import torch, `exec` and `run` automatically prepend a torch-capable venv and say so on stdout. `rc exec -- python -c "import torch"` therefore works with no extra flags in either case. Pass `--venv <path>` to choose one explicitly, or `--no-auto-venv` to disable the behaviour. The probe is cached for six hours in `~/.radeon-cloud-connector/venv-cache.json`; `rc doctor`, `rc env` and `rc status --torch` refresh it.
+The CLI defends against both states: when `env.sh`'s default venv cannot import torch, `exec` and `run` automatically prepend a torch-capable venv and say so on stdout. `rc exec -- python -c "import torch"` therefore works with no extra flags in either case. Pass `--venv <path>` to choose one explicitly, or `--no-auto-venv` to disable the behaviour. The probe is cached in `~/.radeon-cloud-connector/venv-cache.json`: a successful probe for six hours, a failed one for only five minutes so a transient timeout cannot disable auto-fix for a whole working session. `rc doctor`, `rc env` and `rc status --torch` refresh it.
 
 Which venv is correct changes whenever the user rebuilds environments, and stale venvs get deleted outright during disk cleanups. Never copy a venv path out of this document into a command without checking `rc env` first; the candidate list is discovery-only and any named path may disappear after a rebuild or cleanup.
 
@@ -64,7 +64,7 @@ Disk is the recurring failure mode on this box. `/workspace` reached 97% used (3
 | `env` | Validate the whole remote contract, including the env.sh PATH cross-check. |
 | `config [--show|--set K=V|--reset]` | Local connector configuration, stored in `~/.radeon-cloud-connector/config.json`. |
 
-Exit codes: `0` success, `1` a real failure, `2` the remote host could not be reached or authenticated. A command that returns `2` always prints one actionable next step.
+Exit codes: `0` success, `1` a real failure, `2` the remote host could not be reached or authenticated. A command that returns `2` always prints one actionable next step. Two documented exceptions: **`exec` and `run` return the remote command's own exit code** — a script that dies with `exit 3` makes `rc exec` return `3`; only `2` stays reserved for connection problems, so test with `rc exec ...; [ $? -ne 0 ]` rather than `-eq 1`. And `doctor` against an unreachable or unauthenticated host exits `2` (the connection case), not `1`.
 
 ## Workflows
 
@@ -89,14 +89,46 @@ The CLI defaults to the persistent volume and requires `--allow-ephemeral` to wr
 
 Every command that needs the remote host fails fast with one actionable message instead of a raw ssh error or, worse, an empty success. An unknown ssh alias, a dead endpoint and a refused key are each reported in plain language with the exact thing to run next. A failing remote command is never dressed up as a connection problem: a `ModuleNotFoundError` stays a `ModuleNotFoundError`.
 
-Do not "fix" `/workspace/env.sh` on the remote host on your own initiative. Its PATH entry is wrong for torch work, but changing it could affect the user's other projects; report the mismatch and let them decide, or use `--venv` per command instead.
+Do not "fix" `/workspace/env.sh` on the remote host on your own initiative. As of 2026-09-01 its PATH entry is correct for torch work (`/workspace/venv` carries torch 2.12.0+rocm7.14.0), but it has pointed at a venv with no torch before, and the user edits it for their other projects. Check with `rc env` before relying on it; if the head of PATH lacks torch, report the mismatch and let the user decide, or use `--venv` per command instead.
+
+## The costliest trap: HIP init can hang forever
+
+On this box `rocminfo` can wedge in uninterruptible sleep (`D` state) and never return. Every call that performs HIP initialisation shells out to it, so these calls hang the same way:
+
+| Call | Behaviour when rocminfo is wedged |
+|---|---|
+| `rocminfo` (any form) | hangs |
+| `torch.cuda.device_count()` | hangs |
+| `torch.cuda.is_available()` | hangs |
+| `rocm-smi` | fine, returns instantly |
+| `import torch` / `torch.version.hip` | fine |
+
+Rules that follow from this:
+
+- **Never probe GPU state with `torch.cuda.is_available()` / `torch.cuda.device_count()`.** Use `import torch` + `torch.version.hip` to check torch, and `rc status` (which reads `rocm-smi`) to check the GPU.
+- **When you add a remote probe to this skill, always bound it on the remote side as well as locally** (`timeout -s KILL <n> <cmd>`). A local `subprocess` timeout kills the local ssh client and orphans the remote process — that is exactly how one bug accumulated 100+ leaked processes and pushed loadavg past 90 in half a day.
+- **Failed probes must not be cached like successful ones.** The venv probe result is cached for six hours when it succeeds, but a failed probe expires after five minutes so one transient timeout cannot silently disable torch auto-fix for a whole working session.
+
+If commands start hanging and load is inexplicably high, check for leaked probes: `ssh radeon-cloud "ps -eo pid,etimes,stat,args | grep -E 'device_count|is_available' | grep -v grep"`. `D`-state processes survive even SIGKILL; only a container restart clears them.
+
+On Windows/Git Bash, `$(pwd)` produces MSYS-style paths (`/c/Users/...`). `rc push` and `rc pull` translate these via `_native_path()`; hand them to nothing else without converting.
 
 ## Self-verification
 
 After any change to `rc.py` or to this file, confirm the connector still
-diagnoses rather than guesses: a bare `rc doctor` on a machine where the alias
-is absent must print one actionable message and exit `2`, and `rc doctor` on a
-configured machine must reach the GPU check.
+diagnoses rather than guesses:
+
+1. A bare `rc doctor` on a machine where the alias is absent must print one
+   actionable message (exactly once) and exit `2`.
+2. `rc doctor` on a configured machine must reach the GPU check.
+3. No remote probe may rely on a local timeout alone; every probe carries a
+   remote `timeout -s KILL` bound.
+4. A failed venv probe must read as "unknown", never as "no torch" — in
+   `doctor` (warn, not fail), `status --torch` (warn, exit governed by the
+   GPU probe), `env` (explicit warn line) and `guide` (distinct message).
+5. `rc env` must never print a green OK for a venv it did not actually
+   verify; when the probe fails, the resolved-environment section says so
+   instead of silently disappearing.
 
 ## References
 

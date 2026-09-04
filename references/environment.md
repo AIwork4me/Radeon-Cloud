@@ -70,6 +70,8 @@ Sourced from `/workspace/env.sh` before every `rc exec` / `rc run`:
 
 `rsync`, `tar`, `nohup`, `timeout`, `setsid`, `pkill`, `python3` (3.12.3), `rocm-smi`, `rocminfo`. There is **no tmux or screen**, which is why `rc run` uses `setsid`+`nohup` and tracks pids itself. Locally there is **no rsync**, which is why `push`/`pull` stream tar over ssh instead.
 
+**Warning about `rocminfo`:** it has been observed wedging in uninterruptible sleep (`D` state) on this box, which takes down every HIP-initialising call with it (`torch.cuda.is_available()`, `torch.cuda.device_count()`). Do not use `rocminfo` or HIP init for probes; use `rocm-smi` for GPU state and `import torch` + `torch.version.hip` for the torch stack. See troubleshooting.md, "A command hangs forever".
+
 ## Text convention for anything written for this project
 
 No 76-column hard wrapping. Every paragraph is written as a single line and left to the viewer to soft-wrap. This applies to prose in Markdown documents, GitHub comments and issues, commit messages and chat replies. Code blocks are exempt and follow their own language style. Existing hard-wrapped history is left alone unless reformatting is explicitly requested.

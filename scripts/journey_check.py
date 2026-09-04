@@ -606,7 +606,7 @@ def _test_heal_is_surgical(cfg: dict) -> dict:
     """
     result = {"healed": False, "backup": False, "siblings_ok": False, "target_ok": False,
               "real_untouched": False, "detail": ""}
-    real = rc.known_hosts_path()
+    real = rc.known_hosts_path(cfg)
     if not real.exists():
         result["detail"] = "no known_hosts to test against"
         return result
@@ -621,7 +621,7 @@ def _test_heal_is_surgical(cfg: dict) -> dict:
     tmp = tmpdir / "known_hosts"
     shutil.copy2(real, tmp)
     original_fn = rc.known_hosts_path
-    rc.known_hosts_path = lambda: tmp  # type: ignore[assignment]
+    rc.known_hosts_path = lambda _cfg=None: tmp  # type: ignore[assignment]
     try:
         import io
         from contextlib import redirect_stdout

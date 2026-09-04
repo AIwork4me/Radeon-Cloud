@@ -740,55 +740,85 @@ def check_remote_path(path: str, cfg: dict, allow_ephemeral: bool) -> tuple[bool
 # --------------------------------------------------------------------------
 
 
-def probe_venvs(cfg: dict) -> list[dict]:
-    """Ask the remote host which candidate venvs contain a working torch."""
+# Bound each venv's probe on the REMOTE side. `torch.cuda.device_count()` (and
+# anything else that touches HIP init) can hang in uninterruptible sleep for
+# good when `rocminfo` wedges, and a local subprocess timeout only kills the
+# local ssh client - the remote python keeps running forever. Never probe GPU
+# state by importing torch.cuda: `import torch` + `torch.version.hip` answers
+# "is torch usable here" without ever touching HIP.
+TORCH_PROBE_TIMEOUT = 40  # seconds, per venv, enforced remotely via `timeout -s KILL`
+
+
+def probe_venvs(cfg: dict) -> tuple[list[dict], bool]:
+    """Ask the remote host which candidate venvs contain a working torch.
+
+    Returns (venvs, probe_ok). probe_ok is False when the probe itself failed
+    (timeout, unreachable host) - a state that must stay distinguishable from
+    "the probe ran fine and found no torch", which is what an empty list used
+    to mean and what made `doctor` report a healthy venv as missing.
+    """
     candidates = cfg.get("venv_candidates", [])
     listed = " ".join(shlex.quote(c) for c in candidates)
     script = (
         "for v in " + listed + "; do "
         "  if [ -x \"$v/bin/python\" ]; then "
-        "    ver=$(\"$v/bin/python\" -c "
-        "\"import torch;print(torch.__version__+'|'+str(torch.version.hip)+'|'+str(torch.cuda.device_count()))\" "
+        "    ver=$(timeout -s KILL " + str(TORCH_PROBE_TIMEOUT) + " \"$v/bin/python\" -c "
+        "\"import torch;print(torch.__version__+'|'+str(torch.version.hip))\" "
         "2>/dev/null); "
         "    if [ -n \"$ver\" ]; then echo \"$v|$ver\"; else echo \"$v|NO_TORCH\"; fi; "
         "  else echo \"$v|MISSING\"; fi; "
         "done"
     )
-    rc, out, err = ssh_run(cfg, script, timeout=120)
-    results = []
+    rc, out, err = ssh_run(
+        cfg,
+        script,
+        timeout=max(60, TORCH_PROBE_TIMEOUT * max(1, len(candidates)) + 30),
+    )
+    results: list[dict] = []
     if rc != 0:
-        return results
+        # The probe itself failed. Returning ([], False) lets callers tell
+        # "we could not check" apart from "we checked and there is no torch";
+        # collapsing both into [] is what turned a wedged rocminfo into a
+        # false "no candidate venv exposes torch" verdict.
+        return results, False
     for line in out.splitlines():
         line = line.strip()
         if "|" not in line:
             continue
         path, _, status = line.partition("|")
         entry = {"path": path, "status": status}
-        if status.count("|") == 2:
-            torch_ver, hip, devs = status.split("|")
-            entry.update(
-                {"torch": torch_ver, "hip": hip, "devices": devs, "ok": True}
-            )
+        if status.count("|") == 1:
+            torch_ver, hip = status.split("|")
+            entry.update({"torch": torch_ver, "hip": hip, "ok": True})
         else:
             entry["ok"] = False
         results.append(entry)
-    return results
+    return results, True
 
 
 VENV_CACHE_PATH = CONFIG_DIR / "venv-cache.json"
 VENV_CACHE_TTL = 6 * 3600  # seconds
+VENV_CACHE_FAILED_TTL = 300  # seconds; a FAILED probe must not hold its (empty,
+# meaningless) result for six hours - that silently disables torch auto-fix for
+# an entire working session after one transient timeout.
 
 
 def _venv_cache_state(cfg: dict) -> dict:
     """Probe the remote venvs and the env.sh PATH head in one go (cached)."""
-    venvs = probe_venvs(cfg)
+    venvs, probe_ok = probe_venvs(cfg)
     head = remote_capture(
         cfg,
         f"source {shlex.quote(cfg['env_file'])} 2>/dev/null; echo $PATH",
         timeout=60,
     )
     path_head = head.split(":")[0] if head else ""
-    return {"host": cfg["host"], "ts": time.time(), "venvs": venvs, "env_path_head": path_head}
+    return {
+        "host": cfg["host"],
+        "ts": time.time(),
+        "venvs": venvs,
+        "probe_ok": probe_ok,
+        "env_path_head": path_head,
+    }
 
 
 def _load_venv_cache(cfg: dict) -> dict | None:
@@ -819,6 +849,12 @@ def ensure_venv_cache(cfg: dict, force: bool = False) -> dict:
         if cached is not None:
             return cached
     state = _venv_cache_state(cfg)
+    if not state.get("probe_ok", True):
+        # Back-date the entry so a failed probe expires after FAILED_TTL rather
+        # than caching "we know nothing" for the full six-hour TTL. A probe that
+        # succeeded and genuinely found no torch is still cached for the full
+        # TTL - that result is real and worth remembering.
+        state["ts"] = time.time() - (VENV_CACHE_TTL - VENV_CACHE_FAILED_TTL)
     _save_venv_cache(state)  # cached even when empty, so we stop re-probing
     return state
 
@@ -889,10 +925,15 @@ def cmd_doctor(args, cfg) -> int:
         _print_report(report)
         print()
         info("Nothing downstream can succeed until the endpoint is configured.")
+        # diagnose_ssh_failure already ends with the connection-setup hint, so
+        # printing it again here just duplicates the one actionable line.
         for line in diagnose_ssh_failure(cfg, 255, "", "").splitlines():
             print("       " + line)
-        print("       " + connection_setup_hint())
-        return 1
+        # Documented contract (SKILL.md): a host that cannot be reached or
+        # authenticated is exit 2, not exit 1. `doctor` is the command a new
+        # user runs first, so getting this wrong sends scripts down the wrong
+        # branch immediately.
+        return EXIT_CONNECT
 
     if not target:
         add("ssh config resolves", False, f"`ssh -G {host}` returned nothing")
@@ -976,14 +1017,25 @@ def cmd_doctor(args, cfg) -> int:
     )
     add(f"env file {env_file}", "YES" in env_out, env_out.strip())
 
-    venvs = ensure_venv_cache(cfg, force=True).get("venvs", [])
+    venv_state = ensure_venv_cache(cfg, force=True)
+    venvs = venv_state.get("venvs", [])
+    venv_probe_ok = venv_state.get("probe_ok", True)
     working = [v for v in venvs if v.get("ok")]
     if working:
         best = working[0]
         add(
             "python env with torch",
             True,
-            f"{best['path']} -> torch {best['torch']} / HIP {best['hip']} / {best['devices']} device(s)",
+            f"{best['path']} -> torch {best['torch']} / HIP {best['hip']}",
+        )
+    elif not venv_probe_ok:
+        # The probe timed out / failed. That is not evidence that torch is
+        # missing - claiming so blocked users whose venv was perfectly fine.
+        add(
+            "python env with torch",
+            False,
+            "could not probe candidate venvs (probe failed; re-run `rc doctor`)",
+            "warn",
         )
     else:
         add("python env with torch", False, "no candidate venv exposes torch")
@@ -1008,10 +1060,13 @@ def cmd_doctor(args, cfg) -> int:
 
     # NOTE: rocm-smi --showproductname prints one line per ATTRIBUTE, all sharing
     # the same "GPU[n]" prefix, so counting matching lines massively overcounts.
-    # Count unique device indices instead.
+    # Count unique device indices instead. The remote `timeout -s KILL` bounds
+    # the probe on the far side: a local subprocess timeout kills only the local
+    # ssh client and orphans whatever is still running remotely.
     gpu_out = remote_capture(
         cfg,
-        r"rocm-smi --showproductname 2>/dev/null | grep -oE 'GPU\[[0-9]+\]' | sort -u | wc -l",
+        r"timeout -s KILL 45 rocm-smi --showproductname 2>/dev/null "
+        r"| grep -oE 'GPU\[[0-9]+\]' | sort -u | wc -l",
         timeout=90,
     )
     gpu_count = gpu_out.strip().splitlines()[0] if gpu_out and gpu_out.strip() else "0"
@@ -1100,7 +1155,8 @@ def cmd_status(args, cfg) -> int:
     probes_ok = True
     raw = remote_capture(
         cfg,
-        "rocm-smi --showproductname --showtemp --showpower --showmeminfo vram 2>/dev/null",
+        "timeout -s KILL 45 rocm-smi --showproductname --showtemp --showpower "
+        "--showmeminfo vram 2>/dev/null",
         timeout=90,
     )
     disk = remote_capture(cfg, f"df -P -B1 {shlex.quote(cfg['workspace'])} / | tail -2", timeout=30)
@@ -1147,19 +1203,28 @@ def cmd_status(args, cfg) -> int:
         print(f"loadavg {load.strip()}")
 
     if args.torch:
-        venvs = ensure_venv_cache(cfg, force=True).get("venvs", [])
+        venv_state = ensure_venv_cache(cfg, force=True)
+        venvs = venv_state.get("venvs", [])
+        venv_probe_ok = venv_state.get("probe_ok", True)
         working = [v for v in venvs if v.get("ok")]
         print()
         print("torch environments")
         for v in venvs:
             if v.get("ok"):
-                print(f"   {v['path']:<38} torch {v['torch']} / HIP {v['hip']} / {v['devices']} dev")
+                print(f"   {v['path']:<38} torch {v['torch']} / HIP {v['hip']}")
         missing = [v for v in venvs if not v.get("ok")]
         if missing:
             print(f"   ({len(missing)} candidate path(s) not present: " + ", ".join(v['path'] for v in missing) + ")")
         if not working:
-            warn("no venv exposes torch - pass --venv to `rc exec` with a working one")
-            return EXIT_FAIL
+            if venv_probe_ok:
+                warn("no venv exposes torch - pass --venv to `rc exec` with a working one")
+            else:
+                warn("could not probe candidate venvs - torch status unknown (re-run to retry)")
+            # Advisory only. The documented exit contract reserves 1 for a real
+            # failure; a missing torch venv does not stop `status` from having
+            # reported the GPU, disk, memory and load above, so it must not
+            # fail the command. Falling through to the final return keeps that
+            # contract.
 
     return EXIT_OK if probes_ok else EXIT_FAIL
 
@@ -1243,7 +1308,10 @@ def _dir_size(path: Path) -> int:
 
 
 def cmd_push(args, cfg) -> int:
-    local = Path(args.local).expanduser().resolve()
+    # _native_path(), not a bare Path(): Git Bash reports `pwd` as /c/Users/...
+    # and a Windows Python reads that as C:\c\Users\.... A `rc push "$(pwd)/x"`
+    # then pushed the wrong tree, or died with a confusing "does not exist".
+    local = _native_path(args.local).expanduser().resolve()
     if not local.exists():
         die(f"local path does not exist: {local}", EXIT_FAIL)
 
@@ -1349,7 +1417,9 @@ def cmd_pull(args, cfg) -> int:
     if not allowed:
         die(note)
 
-    local = Path(args.local).expanduser().resolve()
+    # Same _native_path() treatment as `push`: an MSYS-style $(pwd)/... must
+    # not resolve to a bogus C:\c\... tree on Windows.
+    local = _native_path(args.local).expanduser().resolve()
     if local.exists() and not args.overwrite:
         die(f"local path already exists: {local} (use --overwrite to merge into it)")
     if args.dry_run:
@@ -1592,7 +1662,9 @@ def cmd_stop(args, cfg) -> int:
 
 def cmd_env(args, cfg) -> int:
     require_remote(cfg, "env")
-    venvs = ensure_venv_cache(cfg, force=True).get("venvs", [])
+    venv_state = ensure_venv_cache(cfg, force=True)
+    venvs = venv_state.get("venvs", [])
+    venv_probe_ok = venv_state.get("probe_ok", True)
     working = [v for v in venvs if v.get("ok")]
 
     env_file = cfg["env_file"]
@@ -1622,7 +1694,7 @@ def cmd_env(args, cfg) -> int:
     print("python environments")
     for v in venvs:
         if v.get("ok"):
-            print(f"   [OK]   {v['path']:<38} torch {v['torch']} / HIP {v['hip']} / {v['devices']} dev")
+            print(f"   [OK]   {v['path']:<38} torch {v['torch']} / HIP {v['hip']}")
         elif v["status"] == "MISSING":
             print(f"   [--]   {v['path']:<38} not present")
         else:
@@ -1636,7 +1708,14 @@ def cmd_env(args, cfg) -> int:
     if path_head:
         declared = path_head.rsplit("/bin", 1)[0] if path_head.endswith("/bin") else path_head
         print()
-        if working and not any(v["path"] == declared for v in working):
+        if not venv_probe_ok:
+            # The old code fell through to the `else` here whenever `working`
+            # was empty, so a failed probe printed a green OK for a venv we
+            # had never actually checked.
+            warn(f"cannot verify env.sh PATH head {declared}: the venv probe did not complete")
+        elif not working:
+            warn(f"no venv exposes torch, so env.sh PATH head {declared} could not be confirmed")
+        elif not any(v["path"] == declared for v in working):
             warn(
                 f"env.sh puts {declared} first on PATH, but it has no torch. "
                 f"Use {working[0]['path']} (or fix env.sh)."
@@ -1645,13 +1724,20 @@ def cmd_env(args, cfg) -> int:
             ok(f"env.sh PATH head resolves to a torch-capable venv: {declared}")
 
     # Must source env.sh first, otherwise HF_HOME / HSA_OVERRIDE_GFX_VERSION
-    # are simply unset and the report silently omits them.
+    # are simply unset and the report silently omits them. GPU identity is
+    # read from `rocm-smi`, NOT `rocminfo`: rocminfo can wedge in
+    # uninterruptible sleep, and when it does, the local ssh timeout kills
+    # only the client and this whole section used to vanish without a word.
+    # Every remote probe below is bounded on the far side as well.
     settings = remote_capture(
         cfg,
         f"source {shlex.quote(env_file)} 2>/dev/null; "
         "echo \"HF_HOME=$HF_HOME\"; echo \"HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION\"; "
         "echo \"ROCM=$(cat /opt/rocm/.info/version 2>/dev/null)\"; "
-        "echo \"GFX=$(rocminfo 2>/dev/null | grep -om1 'gfx[0-9]\\+')\"",
+        "echo \"GPU_ID=$(timeout -s KILL 20 rocm-smi --showproductname 2>/dev/null "
+        "| grep -oE '0x[0-9a-fA-F]+' | head -1)\"; "
+        "echo \"GFX=$(timeout -s KILL 20 rocm-smi --showproductname 2>/dev/null "
+        "| grep -oiE 'gfx[0-9]+' | head -1)\"",
         timeout=90,
     )
     if settings and settings.strip():
@@ -1662,10 +1748,18 @@ def cmd_env(args, cfg) -> int:
                 continue
             key, _, value = line.partition("=")
             print(f"   {key} = {value if value else '(unset)'}")
+    else:
+        # Silence here read as "nothing to report". Say plainly that the probe
+        # failed, so the missing section is visible instead of just absent.
+        warn("could not read the resolved environment (probe timed out)")
 
     if args.json:
         print()
         print(json.dumps({"venvs": venvs, "config": {k: v for k, v in cfg.items()}}, indent=2))
+    if not venv_probe_ok:
+        # The inventory itself could not be produced; reporting success would
+        # repeat the old "green OK + exit 1" contradiction.
+        return EXIT_FAIL
     return 0 if working else 1
 
 
@@ -1695,16 +1789,26 @@ def cmd_guide(args, cfg) -> int:
     state = ensure_venv_cache(cfg, force=True)
     working = [v for v in state.get("venvs", []) if v.get("ok")]
     if not working:
-        fail("no python environment on the remote host can import torch")
-        info("Run `rc env` to see what is installed, then `rc doctor`.")
+        if not state.get("probe_ok", True):
+            fail("could not probe candidate python environments (probe timed out)")
+            info("This is not proof that torch is missing. Run `rc env` to retry.")
+        else:
+            fail("no python environment on the remote host can import torch")
+            info("Run `rc env` to see what is installed, then `rc doctor`.")
         return EXIT_FAIL
     best = working[0]
     ok(f"step 2  GPU + torch ready ({best['path']} -> torch {best['torch']} / HIP {best['hip']})")
 
+    # Step 5 used to suggest `torch.cuda.is_available()`. That call performs
+    # the same HIP initialisation as `torch.cuda.device_count()`, which on
+    # this box shells out to `rocminfo`, hangs in uninterruptible sleep and
+    # never returns - and a local timeout kills only the ssh client, leaving
+    # the remote process to leak. Handing a cold-start user that command put
+    # them on a frozen terminal at step one.
     steps = [
         ("3", "upload your project", f"rc push ./my-project {ws}/my-project"),
         ("4", "check the GPU is visible", "rc status"),
-        ("5", "run a quick command", f'rc exec --cwd {ws}/my-project -- python -c "import torch; print(torch.cuda.is_available())"'),
+        ("5", "run a quick command", f'rc exec --cwd {ws}/my-project -- python -c "import torch; print(torch.__version__)"'),
         ("6", "start a long job detached", f"rc run --name train --cwd {ws}/my-project -- python train.py"),
         ("7", "watch it / list it", "rc logs <job-id> -f        |        rc jobs"),
         ("8", "collect the results", f"rc pull {ws}/my-project/output ./output"),
@@ -1712,6 +1816,9 @@ def cmd_guide(args, cfg) -> int:
     for number, label, command in steps:
         print(f"  step {number}  {label}")
         print(f"          {command}")
+    print()
+    print("Do NOT use torch.cuda.is_available() / torch.cuda.device_count() to test the GPU:")
+    print("  HIP init hangs on this box (rocminfo wedges). Use `rc status` instead.")
     print()
     print("Trouble at any step:  rc doctor        (layered diagnosis, self-heals rotated host keys)")
     print("Full inventory:       rc env")
