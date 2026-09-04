@@ -10,7 +10,7 @@ It is a **WorkBuddy Skill**, not an MCP service or a native third-party Connecto
 
 ## Install
 
-Copy the skill directory to `~/.workbuddy-ai/skills/radeon-cloud-connector`, or use the bundled installer:
+Copy the skill directory to `~/.workbuddy-ai/skills/radeon-cloud`, or use the bundled installer:
 
 ```bash
 PY="${HOME}/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe"
@@ -25,7 +25,7 @@ The installer synchronizes the source files and removes generated `__pycache__` 
 
 ```bash
 PY="${HOME}/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe"
-RC="$HOME/.workbuddy-ai/skills/radeon-cloud-connector/scripts/rc.py"
+RC="$HOME/.workbuddy-ai/skills/radeon-cloud/scripts/rc.py"
 
 "$PY" "$RC" guide
 "$PY" "$RC" doctor
@@ -65,7 +65,7 @@ The live journey requires the configured Radeon Cloud endpoint and exercises rea
 
 ## Build the release artifact
 
-`dist/radeon-cloud-connector` and `dist/radeon-cloud-connector.zip` are generated from the source tree (the source files are the single source of truth). Regenerate them after any source change so the package stays in sync and CI passes:
+`dist/radeon-cloud` and `dist/radeon-cloud.zip` are generated from the source tree (the source files are the single source of truth). Regenerate them after any source change so the package stays in sync and CI passes:
 
 ```bash
 PY="${HOME}/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe"
@@ -73,7 +73,7 @@ PY="${HOME}/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe"
 "$PY" scripts/build_dist.py --check   # verify the ZIP matches dist/ without writing
 ```
 
-The ZIP is git-ignored (it is a build artifact); `dist/radeon-cloud-connector` is committed so the skill is installable directly from a clone.
+The ZIP is git-ignored (it is a build artifact); `dist/radeon-cloud` is committed so the skill is installable directly from a clone.
 
 ## Repository and publication status
 

@@ -2,7 +2,7 @@
 """Pre-publish gate: the shipped package must not reference ssh credential material.
 
 Usage:
-    python scripts/publish_scan.py             # scan dist/radeon-cloud-connector
+    python scripts/publish_scan.py             # scan dist/radeon-cloud
     python scripts/publish_scan.py --dir PATH  # scan a different directory
     python scripts/publish_scan.py --quiet     # exit code only, no report
 
@@ -32,7 +32,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SKILL_DIR = HERE.parent
-DIST_DIR = SKILL_DIR / "dist" / "radeon-cloud-connector"
+DIST_DIR = SKILL_DIR / "dist" / "radeon-cloud"
 
 SCANNABLE = {".py", ".md", ".yaml", ".yml", ".toml", ".sh", ".bash", ".json", ".txt"}
 
@@ -99,7 +99,7 @@ def scan_tree(root: Path) -> list[tuple[str, int, str, str]]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--dir", help="directory to scan (default: dist/radeon-cloud-connector)")
+    ap.add_argument("--dir", help="directory to scan (default: dist/radeon-cloud)")
     ap.add_argument("--quiet", action="store_true", help="exit code only")
     args = ap.parse_args()
 

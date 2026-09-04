@@ -1,5 +1,5 @@
 ---
-name: radeon-cloud-connector
+name: radeon-cloud
 description: "Operate the AMD Radeon Cloud GPU workstation AMD provides to you for free - one remote Ubuntu box with a 48 GB VRAM gfx1100 GPU, reached through the `radeon-cloud` SSH alias configured on this machine. Prerequisite: register for AMD Radeon Cloud (claim the free GPU time) and set up the ssh alias with the official setup guide before first use. Diagnose and self-heal SSH connection and rotated host keys, inspect ROCm and GPU status via rocm-smi, discover which Python venvs carry torch, run commands remotely, sync code and results between your machine and the box, and manage detached long-running jobs with logs. Start with `rc guide`. Triggers: radeon-cloud, Radeon cloud, Radeon 云, ROCm 远程, 远程 GPU, rocm-smi, gfx1100, 上传到 radeon, 下载结果, 跑训练, 后台任务, GPU 显存."
 agent_created: true
 version: 1.0.3
@@ -54,7 +54,7 @@ Every subcommand accepts `-y/--yes` to skip confirmation prompts. Interactive us
 
 `/workspace/env.sh` sets `PATH`, `HF_HOME` and `HSA_OVERRIDE_GFX_VERSION`, and the CLI sources it before every command. It is shared with the user's other projects and they edit it, so treat it as a moving target rather than a fixed fact: as of 2026-09-01 it points `PATH` at `/workspace/venv`, which carries the standard stack (torch 2.12.0+rocm7.14.0). Earlier it pointed at a venv with no torch at all. Run `rc env` to see the current truth.
 
-The CLI defends against both states: when `env.sh`'s default venv cannot import torch, `exec` and `run` automatically prepend a torch-capable venv and say so on stdout. `rc exec -- python -c "import torch"` therefore works with no extra flags in either case. Pass `--venv <path>` to choose one explicitly, or `--no-auto-venv` to disable the behaviour. The probe is cached in `~/.radeon-cloud-connector/venv-cache.json`: a successful probe for six hours, a failed one for only five minutes so a transient timeout cannot disable auto-fix for a whole working session. `rc doctor`, `rc env` and `rc status --torch` refresh it.
+The CLI defends against both states: when `env.sh`'s default venv cannot import torch, `exec` and `run` automatically prepend a torch-capable venv and say so on stdout. `rc exec -- python -c "import torch"` therefore works with no extra flags in either case. Pass `--venv <path>` to choose one explicitly, or `--no-auto-venv` to disable the behaviour. The probe is cached in `~/.radeon-cloud/venv-cache.json`: a successful probe for six hours, a failed one for only five minutes so a transient timeout cannot disable auto-fix for a whole working session. `rc doctor`, `rc env` and `rc status --torch` refresh it.
 
 Which venv is correct changes whenever the user rebuilds environments, and stale venvs get deleted outright during disk cleanups. Never copy a venv path out of this document into a command without checking `rc env` first; the candidate list is discovery-only and any named path may disappear after a rebuild or cleanup.
 
@@ -75,7 +75,7 @@ Disk is the recurring failure mode on this box. `/workspace` reached 97% used (3
 | `logs <job-id> [-f] [-n N]` | Show or follow a job log. |
 | `stop <job-id> [--force]` | Terminate a job: SIGTERM by default, SIGKILL with `--force`. Idempotent on a job that already exited. |
 | `env` | Validate the whole remote contract, including the env.sh PATH cross-check. |
-| `config [--show|--set K=V|--reset]` | Local connector configuration, stored in `~/.radeon-cloud-connector/config.json`. |
+| `config [--show|--set K=V|--reset]` | Local connector configuration, stored in `~/.radeon-cloud/config.json`. |
 
 Exit codes: `0` success, `1` a real failure, `2` the remote host could not be reached or authenticated. A command that returns `2` always prints one actionable next step. Two documented exceptions: **`exec` and `run` return the remote command's own exit code** — a script that dies with `exit 3` makes `rc exec` return `3`; only `2` stays reserved for connection problems, so test with `rc exec ...; [ $? -ne 0 ]` rather than `-eq 1`. And `doctor` against an unreachable or unauthenticated host exits `2` (the connection case), not `1`.
 

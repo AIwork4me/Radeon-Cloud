@@ -2,13 +2,13 @@
 """Build the installable skill directory and release ZIP from source.
 
 Usage:
-    python scripts/build_dist.py            # sync dist/ and write dist/radeon-cloud-connector.zip
+    python scripts/build_dist.py            # sync dist/ and write dist/radeon-cloud.zip
     python scripts/build_dist.py --check    # verify the ZIP matches dist/ without writing
 
 The source tree is the single source of truth. This script copies the tracked
-skill files into ``dist/radeon-cloud-connector`` and packages that directory as a
-ZIP with the skill root prefix ``radeon-cloud-connector/``. The ZIP is git-ignored
-(generated artifact); ``dist/radeon-cloud-connector`` is committed so the skill is
+skill files into ``dist/radeon-cloud`` and packages that directory as a
+ZIP with the skill root prefix ``radeon-cloud/``. The ZIP is git-ignored
+(generated artifact); ``dist/radeon-cloud`` is committed so the skill is
 installable directly from a clone.
 """
 
@@ -23,8 +23,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SKILL_DIR = HERE.parent
-DIST_DIR = SKILL_DIR / "dist" / "radeon-cloud-connector"
-ZIP_PATH = SKILL_DIR / "dist" / "radeon-cloud-connector.zip"
+DIST_DIR = SKILL_DIR / "dist" / "radeon-cloud"
+ZIP_PATH = SKILL_DIR / "dist" / "radeon-cloud.zip"
 
 TRACKED = (
     "SKILL.md",
@@ -104,7 +104,7 @@ def build_zip() -> None:
     with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as z:
         for p in sorted(DIST_DIR.rglob("*")):
             if p.is_file() and "__pycache__" not in p.parts:
-                rel = "radeon-cloud-connector/" + str(p.relative_to(DIST_DIR)).replace("\\", "/")
+                rel = "radeon-cloud/" + str(p.relative_to(DIST_DIR)).replace("\\", "/")
                 z.write(p, rel)
 
 
@@ -117,7 +117,7 @@ def verify_zip() -> int:
     expected = set()
     for p in DIST_DIR.rglob("*"):
         if p.is_file() and "__pycache__" not in p.parts:
-            expected.add("radeon-cloud-connector/" + str(p.relative_to(DIST_DIR)).replace("\\", "/"))
+            expected.add("radeon-cloud/" + str(p.relative_to(DIST_DIR)).replace("\\", "/"))
     if znames != expected:
         print("ZIP set mismatch")
         print("missing:", sorted(expected - znames))

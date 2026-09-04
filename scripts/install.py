@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install (or re-sync) the radeon-cloud-connector skill for the current user.
+"""Install (or re-sync) the radeon-cloud skill for the current user.
 
     python scripts/install.py            # sync to ~/.workbuddy-ai/skills/<name>
     python scripts/install.py --check    # report drift without writing

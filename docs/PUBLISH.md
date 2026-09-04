@@ -7,7 +7,7 @@ Two install paths exist. **Path A (SkillHub one-click) is the best UX** and is w
 Run from the repo root with the managed Python (`C:/Users/rocm/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe`):
 
 - `python scripts/journey_check.py --phase review` → **44/44** (packaging, doc drift, console/platform safety, install sync, exit-code contract).
-- `python scripts/build_dist.py --check` → **ZIP OK** (8 files; `dist/radeon-cloud-connector` byte-identical to source, `dist/radeon-cloud-connector.zip` passes `testzip()`).
+- `python scripts/build_dist.py --check` → **ZIP OK** (8 files; `dist/radeon-cloud` byte-identical to source, `dist/radeon-cloud.zip` passes `testzip()`).
 - `python scripts/journey_check.py --phase journey` → **73/73** (full live journey against the real Radeon Cloud box).
 
 ## Path A — SkillHub one-click publish (best UX)
@@ -15,10 +15,10 @@ Run from the repo root with the managed Python (`C:/Users/rocm/.workbuddy-ai/bin
 This is the recommended distribution: a user installs the skill from SkillHub without cloning or running anything.
 
 1. Open the **WorkBuddy** app.
-2. Go to **Skills** (left sidebar) → your `radeon-cloud-connector` skill (it is already installed at `~/.workbuddy-ai/skills/radeon-cloud-connector/`).
+2. Go to **Skills** (left sidebar) → your `radeon-cloud` skill (it is already installed at `~/.workbuddy-ai/skills/radeon-cloud/`).
 3. Choose **Publish** (or run the publish CLI if available in your environment):
-   - CLI form (when the `workbuddy` binary is on PATH): `workbuddy skills publish ./dist/radeon-cloud-connector`
-   - If the CLI is not available, use the in-app publish flow — the publish package is `dist/radeon-cloud-connector/` (or its ZIP).
+   - CLI form (when the `workbuddy` binary is on PATH): `workbuddy skills publish ./dist/radeon-cloud`
+   - If the CLI is not available, use the in-app publish flow — the publish package is `dist/radeon-cloud/` (or its ZIP).
 4. After publish, a new user installs it with one click and follows `rc guide`.
 
 > Note: in the build environment used for this repo the `workbuddy` publish CLI was **not** on PATH and official publish permission/entry may be required, so Step 3 may need to be performed from the WorkBuddy desktop app rather than this shell. The publish package itself is verified ready (see checklist).
@@ -30,15 +30,15 @@ Already works today; documented for completeness and as the one-pass fallback if
 ```bash
 git clone https://github.com/AIwork4me/Radeon-Cloud-Connector.git
 cd Radeon-Cloud-Connector
-python scripts/install.py          # copies the skill to ~/.workbuddy-ai/skills/radeon-cloud-connector/
+python scripts/install.py          # copies the skill to ~/.workbuddy-ai/skills/radeon-cloud/
 ```
 
-Then in WorkBuddy, the `radeon-cloud-connector` skill is available. First run: `rc guide`.
+Then in WorkBuddy, the `radeon-cloud` skill is available. First run: `rc guide`.
 
 ## Publish artifact
 
-- Directory: `dist/radeon-cloud-connector/` (synced source of truth).
-- Archive: `dist/radeon-cloud-connector.zip` (git-ignored; rebuilt by CI and `build_dist.py`).
+- Directory: `dist/radeon-cloud/` (synced source of truth).
+- Archive: `dist/radeon-cloud.zip` (git-ignored; rebuilt by CI and `build_dist.py`).
 
 ## Requirements for the end user
 

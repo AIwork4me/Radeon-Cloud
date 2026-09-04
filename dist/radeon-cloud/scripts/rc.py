@@ -32,8 +32,8 @@ import tarfile
 import time
 from pathlib import Path
 
-APP_NAME = "radeon-cloud-connector"
-CONFIG_DIR = Path.home() / ".radeon-cloud-connector"
+APP_NAME = "radeon-cloud"
+CONFIG_DIR = Path.home() / ".radeon-cloud"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
 DEFAULTS = {

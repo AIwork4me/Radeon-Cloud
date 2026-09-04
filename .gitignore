@@ -7,6 +7,6 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-dist/radeon-cloud-connector.zip
+dist/radeon-cloud.zip
 .workbuddy-ai/memory/
 .workbuddy/

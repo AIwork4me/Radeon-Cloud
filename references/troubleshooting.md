@@ -20,7 +20,7 @@ Every command through `rc exec` / `rc run` sources `/workspace/env.sh`, so you i
 
 This used to be the box's standing defect: `env.sh` pointed at a venv with no torch at all. The user fixed it on 2026-09-01 by installing the standard stack into `/workspace/venv` and updating `env.sh`. The file is theirs to edit and the instance gets re-imaged, so the defect can come back — treat it as a state to check, not a fact to remember.
 
-You normally should not hit this either way: the connector detects that `env.sh`'s default venv cannot import torch and automatically prepends a torch-capable one, printing an advisory line naming both paths. The inventory is cached for six hours in `~/.radeon-cloud-connector/venv-cache.json`.
+You normally should not hit this either way: the connector detects that `env.sh`'s default venv cannot import torch and automatically prepends a torch-capable one, printing an advisory line naming both paths. The inventory is cached for six hours in `~/.radeon-cloud/venv-cache.json`.
 
 If it still happens, the cache is stale or no venv has a working torch. Refresh and inspect:
 
@@ -138,4 +138,4 @@ Reset local config to defaults:
 "$PY" "$RC" config --reset
 ```
 
-Config lives at `~/.radeon-cloud-connector/config.json`. `--host <alias>` is a whitelist, not a general override: it only accepts the already-configured `radeon-cloud` alias and rejects every other value with exit `2`, so the skill can never be pointed at a different machine by mistake.
+Config lives at `~/.radeon-cloud/config.json`. `--host <alias>` is a whitelist, not a general override: it only accepts the already-configured `radeon-cloud` alias and rejects every other value with exit `2`, so the skill can never be pointed at a different machine by mistake.

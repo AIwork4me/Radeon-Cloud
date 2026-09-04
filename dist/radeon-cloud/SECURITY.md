@@ -35,7 +35,7 @@ and how it was hardened for the SkillHub security review.
   (Advanced self-hosting via a raw host in `config.yaml` is still permitted; that
   path does not use `--host`.)
 - **Audit log.** Every `rc exec` / `rc run` writes one append-only line to
-  `~/.radeon-cloud-connector/audit.log` — timestamp, the alias, the command as
+  `~/.radeon-cloud/audit.log` — timestamp, the alias, the command as
   you typed it, and its exit code. No secrets are recorded.
 - **Confirmation, with unattended execution denied by default.** When you run a
   command from an interactive terminal, `rc exec` / `rc run` ask you to confirm
