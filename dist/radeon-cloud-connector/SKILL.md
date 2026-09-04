@@ -1,6 +1,6 @@
 ---
 name: radeon-cloud-connector
-description: "Operate your own rented AMD Radeon Cloud GPU workstation - one remote box reached through the `radeon-cloud` SSH alias configured on this machine, not an AMD cloud service. Diagnose and self-heal SSH connection and rotated host keys, inspect ROCm and GPU status via rocm-smi, discover which Python venvs carry torch, run commands remotely, sync code and results between your machine and the box, and manage detached long-running jobs with logs. Start with `rc guide`. Triggers: radeon-cloud, Radeon cloud, Radeon 云, ROCm 远程, 远程 GPU, rocm-smi, gfx1100, 上传到 radeon, 下载结果, 跑训练, 后台任务, GPU 显存."
+description: "Operate the AMD Radeon Cloud GPU workstation AMD provides to you for free - one remote Ubuntu box with a 48 GB VRAM gfx1100 GPU, reached through the `radeon-cloud` SSH alias configured on this machine. Diagnose and self-heal SSH connection and rotated host keys, inspect ROCm and GPU status via rocm-smi, discover which Python venvs carry torch, run commands remotely, sync code and results between your machine and the box, and manage detached long-running jobs with logs. Start with `rc guide`. Triggers: radeon-cloud, Radeon cloud, Radeon 云, ROCm 远程, 远程 GPU, rocm-smi, gfx1100, 上传到 radeon, 下载结果, 跑训练, 后台任务, GPU 显存."
 agent_created: true
 version: 1.0.3
 category: developer-tools
@@ -16,7 +16,7 @@ platforms: [windows, macos, linux]
 
 ## Overview
 
-`radeon-cloud` is a rented Ubuntu 24.04 container with one AMD Navi 31 GPU (gfx1100, about 48 GB VRAM) and ROCm installed. This skill wraps it behind a single CLI, `scripts/rc.py`, which exists because five things on this box repeatedly go wrong and each one costs real time when handled by hand: the SSH host key rotates whenever the instance is re-imaged, `/workspace/env.sh` puts a venv without torch first on `PATH`, the container overlay silently discards anything written outside `/workspace`, long jobs die when the local terminal goes away, and a broken endpoint otherwise looks like a working one.
+`radeon-cloud` is a free-of-charge AMD Radeon Cloud instance: an Ubuntu 24.04 container with one AMD Navi 31 GPU (gfx1100, about 48 GB VRAM) and ROCm installed. This skill wraps it behind a single CLI, `scripts/rc.py`, which exists because five things on this box repeatedly go wrong and each one costs real time when handled by hand: the SSH host key rotates whenever the instance is re-imaged, `/workspace/env.sh` puts a venv without torch first on `PATH`, the container overlay silently discards anything written outside `/workspace`, long jobs die when the local terminal goes away, and a broken endpoint otherwise looks like a working one.
 
 Prefer the CLI over hand-rolled `ssh` one-liners. It sources the environment, applies the persistence guard, handles host-key rotation and tracks job state.
 
